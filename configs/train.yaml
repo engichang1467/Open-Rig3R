@@ -1,0 +1,27 @@
+batch_size: 28 # 8
+n_frames: 2 # 4
+epochs: 50
+optimizer:
+  type: AdamW
+  lr: 1e-4
+  weight_decay: 0.01
+scheduler:
+  type: CosineAnnealingLR
+  T_max: 50
+  eta_min: 1e-6
+metadata_dropout: 0.5
+device: cuda
+
+# batch_size: 128
+# n_frames: 24
+# epochs: 50
+# optimizer:
+#   type: AdamW
+#   lr: 1e-4
+#   weight_decay: 0.01
+# scheduler:
+#   type: CosineAnnealingLR
+#   T_max: 50
+#   eta_min: 1e-6
+# metadata_dropout: 0.5
+# device: cuda
