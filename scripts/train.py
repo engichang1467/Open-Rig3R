@@ -1,6 +1,7 @@
 import os
 import yaml
 import torch
+import argparse
 from pathlib import Path
 from torch.utils.data import DataLoader
 from torch import nn, optim
@@ -26,8 +27,18 @@ from torch.utils.tensorboard import SummaryWriter
 # -----------------------------
 # 1. Load configs
 # -----------------------------
-with open("configs/train.yaml", "r") as f:
-    train_cfg = yaml.safe_load(f)
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train Rig3R model")
+    parser.add_argument("--config", type=str, required=True, help="Path to config file (YAML)")
+    return parser.parse_args()
+
+
+def load_config(config_path):
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)
+
+args = parse_args()
+train_cfg = load_config(args.config)
 
 device = torch.device(train_cfg.get("device", "cuda") if torch.cuda.is_available() else "cpu")
 
