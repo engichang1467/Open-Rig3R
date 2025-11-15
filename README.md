@@ -22,23 +22,7 @@ This repository is a **reimplementation** of the original [Rig3R paper (Li et al
 
 ## 🧠 Model Overview
 
-```
-               ┌────────────────────────────┐
-               │    Shared ViT Encoder      │
-               │   (per image feature map)  │
-               └────────────┬───────────────┘
-                            │
-              ┌─────────────┴─────────────┐
-              │ Rig-Aware Transformer     │
-              │   Decoder (joint attention│
-              │   across images + metadata)│
-              └─────────────┬─────────────┘
-        ┌────────────────────┼────────────────────┐
-        │                    │                    │
-   Pointmap Head        Pose Raymap Head      Rig Raymap Head
- (3D coordinates)     (Global frame)        (Rig-relative frame)
-```
-
+![Rig3R Model Architecture](img/rig3r_architecture.png)
 
 ---
 
@@ -48,7 +32,7 @@ This repository is a **reimplementation** of the original [Rig3R paper (Li et al
 
 Set up environment with [`uv`](https://docs.astral.sh/uv/)
 
-```
+```bash
 make setup-env
 ```
 
