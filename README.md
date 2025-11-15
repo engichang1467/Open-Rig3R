@@ -36,10 +36,16 @@ Set up environment with [`uv`](https://docs.astral.sh/uv/)
 make setup-env
 ```
 
+### Activate the Environment
+
+```bash
+source .venv/bin/activate
+```
+
 ### Install Dependencies
 
 ```bash
-make install-all
+make install
 ```
 
 ---
