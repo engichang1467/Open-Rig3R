@@ -52,13 +52,25 @@ make install
 
 ## 🧩 Training
 
-To train Rig3R from scratch:
+### Prepare CO3D Dataset (Coming Soon)
 
 ```bash
-python scripts/train.py --config configs/train.yaml
+Instructions coming soon
 ```
 
-Recommended configuration values (from paper):
+### Download the Pretrained DUSt3R Model
+
+```bash
+make setup-train
+```
+
+### Start Training
+
+```bash
+make train
+```
+
+Recommended configuration values:
 
 * Batch size: 128
 * Frames per sample: 24
@@ -71,10 +83,18 @@ Recommended configuration values (from paper):
 
 ## 🧪 Evaluation
 
-Evaluate a pretrained Rig3R model:
+**Note**: Make sure to have trained models ready
+
+### Prepare Wayve Scene 101 datasets
 
 ```bash
-python scripts/evaluate.py --checkpoint checkpoints/rig3r_calib.pt
+make download-wayve101
+```
+
+### Evaluate a pretrained Rig3R model:
+
+```bash
+make evaluate
 ```
 
 Metrics:
@@ -86,7 +106,7 @@ Metrics:
 
 ---
 
-## 🔍 Rig Discovery (Working in progress)
+## 🔍 Rig Discovery (Coming Soon)
 
 Run unsupervised rig calibration discovery:
 
