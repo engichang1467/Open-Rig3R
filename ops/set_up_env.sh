@@ -18,12 +18,3 @@ fi
 
 echo "Setup complete! To activate the environment, run:"
 echo "  source .venv/bin/activate"
-
-
-
-
-
-# curl -LsSf https://astral.sh/uv/install.sh | sh
-
-
-# uv venv --python python3.11
