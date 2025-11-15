@@ -29,9 +29,6 @@ from torch.utils.tensorboard import SummaryWriter
 with open("configs/train.yaml", "r") as f:
     train_cfg = yaml.safe_load(f)
 
-with open("configs/model.yaml", "r") as f:
-    model_cfg = yaml.safe_load(f)
-
 device = torch.device(train_cfg.get("device", "cuda") if torch.cuda.is_available() else "cpu")
 
 # -----------------------------
@@ -67,7 +64,6 @@ val_loader = DataLoader(val_dataset, batch_size=train_cfg["batch_size"], shuffle
 
 pretrain_ckpt_path = Path.cwd().joinpath("checkpoints/pretrained/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth")
 
-# model = Rig3R(model_cfg)
 model = Rig3R(
     encoder_ckpt=pretrain_ckpt_path,    # use sinusoidal encoder for test
     img_size=128,
@@ -109,8 +105,7 @@ writer = SummaryWriter(log_dir="runs/rig3r_train")
 # -----------------------------
 # 7. Training loop
 # -----------------------------
-# num_epochs = train_cfg.get("epochs", 50)
-num_epochs = 1
+num_epochs = train_cfg.get("epochs", 50)
 
 for epoch in range(num_epochs):
     model.train()
@@ -128,8 +123,6 @@ for epoch in range(num_epochs):
                 metadata[key] = value.to(device)
 
         optimizer.zero_grad()
-        # print(f"device: {device}")
-        # print(f"device: {type(device)}")
         with autocast(device_type=str(device)):
             outputs = model(images, metadata)
         loss = compute_loss(outputs, pointcloud)
