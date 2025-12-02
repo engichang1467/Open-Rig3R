@@ -93,29 +93,3 @@ class ViTEncoder(nn.Module):
             "tokens": self.norm(patch_tokens),
             "feature_map": feature_map
         }
-
-
-    # def _load_dust3r_weights(self, state_dict):
-        # pretrained_pos_embed = state_dict["pos_embed"]  # (1, 1 + old_N, C)
-        # cls_token = pretrained_pos_embed[:, 0:1, :]
-        # pos_tokens = pretrained_pos_embed[:, 1:, :]
-
-        # # infer old grid size
-        # old_N = pos_tokens.shape[1]
-        # old_size = int(old_N ** 0.5)
-        # pos_tokens = pos_tokens.reshape(1, old_size, old_size, -1).permute(0, 3, 1, 2)
-
-        # # compute new grid size
-        # # new_H, new_W = self.vit.num_patches_h, self.vit.num_patches_w
-        # new_H, new_W = self.vit.num_patches_h, self.vit.num_patches_w
-        # pos_tokens = F.interpolate(
-        #     pos_tokens, size=(new_H, new_W), mode='bicubic', align_corners=False
-        # )
-
-        # # reshape back
-        # pos_tokens = pos_tokens.permute(0, 2, 3, 1).reshape(1, new_H * new_W, -1)
-        # new_pos_embed = torch.cat([cls_token, pos_tokens], dim=1)
-        # state_dict["pos_embed"] = new_pos_embed
-
-        # msg = self.vit.load_state_dict(state_dict, strict=False)
-        # print("Loaded DUSt3R weights:", msg)

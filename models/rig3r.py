@@ -2,9 +2,6 @@ import torch
 import torch.nn as nn
 
 from models.encoder_vit import ViTEncoder
-# from models.heads.pointmap_head import PointMapHead 
-# from models.heads.rig_raymap_head import RigRaymapHead
-# from models.heads.pose_raymap_head import PoseRaymapHead
 from models.decoder_transformer import RigAwareTransformerDecoder
 
 
@@ -41,12 +38,6 @@ class Rig3R(nn.Module):
             metadata_dim=metadata_dim,
             mlp_dim=mlp_dim
         )
-
-        # # --- Heads ---
-        # self.pointmap_head = PointMapHead(in_dim=embed_dim)
-        # self.pose_head = PoseRaymapHead(in_dim=embed_dim)
-        # self.rig_head = RigRaymapHead(in_dim=embed_dim)
-
     
     def forward(self, images, metadata=None):
         """
@@ -70,16 +61,5 @@ class Rig3R(nn.Module):
 
         # --- Decode with rig-aware transformer ---
         dec_tokens = self.decoder(joint_tokens, frames=N, metadata=metadata, cam2rig=metadata["cam2rig"] if metadata else None) # (B, N * num_patches, C)
-
-        # # --- Apply heads --- 
-        # pointmap = self.pointmap_head(dec_tokens["pointmap"])
-        # pose_raymap = self.pose_head(dec_tokens["pose_raymap"])
-        # rig_raymap = self.rig_head(dec_tokens["rig_raymap"], cam2rig=metadata.get("cam2rig") if metadata else None)
-
-        # return {
-        #     "pointmap": pointmap,
-        #     "pose_raymap": pose_raymap,
-        #     "rig_raymap": rig_raymap
-        # }
 
         return dec_tokens

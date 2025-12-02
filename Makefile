@@ -2,7 +2,7 @@ setup-env:
 	sh ops/set_up_env.sh
 
 setup-train:
-	sh ops/get_pretrained_dust3r.sh
+	sh ops/get_dust3r_pretrain.sh
 
 download-wayve101:
 	mkdir -p data/wayve_scenes_101
@@ -16,3 +16,9 @@ train:
 
 evaluate:
 	python scripts/evaluate.py --config configs/evaluate.yaml
+
+train-debug:
+	python scripts/train.py --config configs/train_mini.yaml
+
+evaluate-debug:
+	python scripts/evaluate.py --config configs/evaluate_mini.yaml

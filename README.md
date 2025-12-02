@@ -121,6 +121,12 @@ make setup-train
 make train
 ```
 
+- **Note**: for debugging or training on a less powerful machine, you can run the command below
+
+```bash
+make train-debug
+```
+
 Recommended configuration values:
 
 * Batch size: 128
@@ -146,6 +152,12 @@ make download-wayve101
 
 ```bash
 make evaluate
+```
+
+- **Note**: for debugging or evaluating on a less powerful machine, you can run the command below
+
+```bash
+make evaluate-debug
 ```
 
 Metrics:

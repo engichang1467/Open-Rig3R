@@ -1,0 +1,2 @@
+checkpoint: "checkpoints/rig3r_epoch5.pt"
+data: "data/wayve_scenes_101/scene_001"
