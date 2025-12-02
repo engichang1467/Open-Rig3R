@@ -93,33 +93,6 @@ class MultiTaskLoss(nn.Module):
         else:
             loss_rig = 0.0
 
-        # # --- Pointmap loss (L2) ---
-        # if 'pointmap' in preds and 'pointmap' in gts:
-        #     loss_point = F.mse_loss(preds['pointmap'], gts['pointmap'], reduction=self.reduction)
-        #     loss_dict['pointmap'] = loss_point
-        # else:
-        #     loss_point = 0.0
-
-        # # --- Pose-raymap loss (cosine / angular) ---
-        # if 'pose_raymap' in preds and 'pose_raymap' in gts:
-        #     loss_pose = 1.0 - F.cosine_similarity(
-        #         preds['pose_raymap'], gts['pose_raymap'], dim=-1
-        #     )
-        #     loss_pose = self._reduce(loss_pose)
-        #     loss_dict['pose_raymap'] = loss_pose
-        # else:
-        #     loss_pose = 0.0
-
-        # # --- Rig-raymap loss (cosine / angular) ---
-        # if 'rig_raymap' in preds and 'rig_raymap' in gts:
-        #     loss_rig = 1.0 - F.cosine_similarity(
-        #         preds['rig_raymap'], gts['rig_raymap'], dim=-1
-        #     )
-        #     loss_rig = self._reduce(loss_rig)
-        #     loss_dict['rig_raymap'] = loss_rig
-        # else:
-        #     loss_rig = 0.0
-
         # --- Combine ---
         total = (
             self.w_point * loss_point +

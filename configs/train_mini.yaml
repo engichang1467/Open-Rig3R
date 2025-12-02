@@ -1,6 +1,6 @@
-batch_size: 128
-n_frames: 24
-epochs: 50
+batch_size: 28 # 8
+n_frames: 2 # 4
+epochs: 5
 optimizer:
   type: AdamW
   lr: 1e-4
@@ -10,4 +10,4 @@ scheduler:
   T_max: 50
   eta_min: 1e-6
 metadata_dropout: 0.5
-device: cuda
+device: cpu

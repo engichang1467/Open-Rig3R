@@ -35,22 +35,6 @@ class PreNormTransformerBlock(nn.Module):
         return x
     
 
-# class SmallHead(nn.Module):
-#     """
-#         Small MLP head applied per token
-#     """
-#     def __init__(self, embed_dim, hidden, out_dim):
-#         super().__init__()
-#         self.net = nn.Sequential(
-#             nn.Linear(embed_dim, hidden),
-#             nn.GELU(),
-#             nn.Linear(hidden, out_dim)
-#         )
-    
-#     def forward(self, tokens): # tokens: (B, T, C)
-#         return self.net(tokens) # (B, T, out_dim)
-    
-
 class RigAwareTransformerDecoder(nn.Module):
     """
         Joint self-attention decoder that attends over concatenated patch tokens from
@@ -102,13 +86,6 @@ class RigAwareTransformerDecoder(nn.Module):
             for _ in range(num_layers)
         ])
 
-        # # Heads: small MLPs to predict vector fields per token
-        # if head_hidden is None:
-        #     head_hidden = max(embed_dim // 4, 128)
-        # self.pointmap_head = SmallHead(embed_dim, head_hidden, 3)
-        # self.pose_raymap_head = SmallHead(embed_dim, head_hidden, 3)
-        # self.rig_raymap_head = SmallHead(embed_dim, head_hidden, 3)
-
         self.pointmap_head = PointMapHead(in_dim=embed_dim)
         self.pose_raymap_head = PoseRaymapHead(in_dim=embed_dim)
         self.rig_raymap_head = RigRaymapHead(in_dim=embed_dim)
@@ -129,10 +106,8 @@ class RigAwareTransformerDecoder(nn.Module):
                 v = v.unsqueeze(1) # (B, D) -> (B, 1, D)
             elif v.dim() != 3:
                 raise ValueError(f"Unsupported metadata shape for key {key}: {v.shape}")
-            # meta_list.append(v)
             
             # Project each token using per-key projection
-            # proj_layer = self.key_projs.get(key)
             proj_layer = self.key_projs[key]
             if proj_layer is None:
                 raise ValueError(f"No projection defined for metadata key: {key}")
@@ -164,22 +139,9 @@ class RigAwareTransformerDecoder(nn.Module):
         meta_tokens = torch.cat(meta_list, dim=1)
 
         if self.meta_proj:
-            
-        # if self.meta_proj is None:
-        #     raise ValueError("Decoder expects metadata_dim but meta_proj is None")
-
             meta_tokens = self.meta_proj(meta_tokens)
         
         return self.metadata_dropout(meta_tokens)
-    
-         # else:
-        #     # metadata: (B, M, metadata_dim) -> project to embed_dim
-        #     if self.meta_proj is None:
-        #         raise ValueError("Decoder expects metadata_dim but meta_proj is None")
-            
-        #     meta_tokens = self.meta_proj(metadata.to(device))  # (B, M, C)
-        # meta_tokens = self.metadata_dropout(meta_tokens)
-        # return meta_tokens
     
     def forward(self, tokens, frames, metadata=None, cam2rig=None):
         """
@@ -188,15 +150,11 @@ class RigAwareTransformerDecoder(nn.Module):
             metadata: Optional (B, M, metadata_dim)  (M == metadata_tokens recommended)
         """
         B, T_total, C = tokens.shape
-        # print(f"T_total: {T_total}")
-        # print(f"frames: {frames}")
         assert C == self.embed_dim, f"tokens embed dim {C} != decoder embed_dim {self.embed_dim}"
         assert T_total % frames == 0, f"tokens length must be divisible by frames"
         patches_per_frame = T_total // frames
 
         device = tokens.device
-
-        # print(f"device: {device}")
 
         # prepare metadata tokens (B, M, C)
         meta_tokens = self._prepare_metadata_tokens(metadata, B, device)  # (B, M, C)
@@ -220,23 +178,12 @@ class RigAwareTransformerDecoder(nn.Module):
         flat = proc_patches.reshape(B * frames * patches_per_frame, C)  # (B*V*P, C)
         point_preds = self.pointmap_head(flat).reshape(B, frames, patches_per_frame, 3)
         pose_preds = self.pose_raymap_head(flat).reshape(B, frames, patches_per_frame, 3)
-        # rig_preds = self.rig_raymap_head(flat, cam2rig=cam2rig).reshape(B, frames, patches_per_frame, 3)
         
         N = frames * patches_per_frame
         flat_reshaped = flat.view(B, N, C)
         rig_preds = self.rig_raymap_head(flat_reshaped, cam2rig=cam2rig)
 
-        # print(f"[DEBUG] rig_preds.shape={rig_preds.shape}, "
-        #       f"B={B}, frames={frames}, patches_per_frame={patches_per_frame}, C={C}, "
-        #       f"expected={B*frames*patches_per_frame*3}")
-
-        # print(f"[DEBUG] rig_preds.shape={rig_preds.shape}, expected=({B},{frames*patches_per_frame},3)")
-
         rig_preds = rig_preds.view(B, frames, patches_per_frame, 3)
-
-        # print(rig_preds.mean(), rig_preds.std())
-
-        # print(f"rig_preds stats:\nmean: {rig_preds.mean()}\nstd: {rig_preds.std()}\n")
  
         return {
             "pointmap": point_preds,

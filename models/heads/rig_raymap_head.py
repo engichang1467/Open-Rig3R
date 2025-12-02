@@ -25,13 +25,6 @@ class RigRaymapHead(BaseHead):
 
         # Transform from camera → rig frame if extrinsics given
         if cam2rig is not None:
-            # if cam2rig.shape[-1] == 4:  # full 4x4
-            #     R = cam2rig[:, :3, :3]
-            # else:
-            #     R = cam2rig
-            # rays = torch.einsum('bij,bnj->bni', R, rays)
-
-
             if cam2rig.dim() == 4:  # (B, V, 3, 3) or (B, V, 4, 4)
                 B, V, _, _ = cam2rig.shape
                 N = rays.shape[1]

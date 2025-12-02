@@ -54,24 +54,13 @@ class Co3DDataset(Dataset):
                     seq_list = seq_list[subset]
 
                 for seq_name in seq_list:
-                # for i in range(seq_list):
-
-                    # seq_name = seq_list[i]
                     seq_name = seq_name[0] # Get the sequence number from the 1st element
-                    # print(f"seq_name: {seq_name}")
 
 
                     seq_path = os.path.join(category_path, seq_name)
-                    # print(f"seq_path: {seq_path}")
                     if os.path.exists(seq_path):  # sanity check
                         samples.append(seq_path)
-                
-                # for seq_name in seq_list:
-                #     print(f"seq_name: {seq_name}")
-                #     seq_path = os.path.join(category_path, seq_name)
-                #     # print(f"seq_path: {seq_path}")
-                #     if os.path.exists(seq_path):  # sanity check
-                #         samples.append(seq_path)
+        
         return samples
 
     def __len__(self):
@@ -101,13 +90,6 @@ class Co3DDataset(Dataset):
         # --- Load frame metadata ---
         metadata = self._load_metadata(seq_path, selected_files)
         metadata = self._maybe_drop_metadata(metadata)
-
-        # Replace dropped metadata with placeholders
-        # for key, value in metadata.items():
-        #     if value is None:
-        #         if key == 'cam2rig':
-        #             # Use identity matrices as placeholder
-        #             metadata[key] = torch.eye(3).unsqueeze(0).repeat(self.n_frames, 1, 1)
 
         # --- Load pointcloud GT if exists ---
         pointcloud_file = os.path.join(seq_path, 'pointcloud.ply')
