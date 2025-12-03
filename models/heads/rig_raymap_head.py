@@ -10,7 +10,7 @@ class RigRaymapHead(BaseHead):
         Optionally applies camera-to-rig transformation if provided.
     """
     def __init__(self, in_dim=1024, hidden_dim=512, normalize=False):
-        super().__init__(in_dim, out_dim=3, hidden_dim=hidden_dim)
+        super().__init__(in_dim, out_dim=6, hidden_dim=hidden_dim)
         self.normalize = normalize
 
     def forward(self, tokens, cam2rig=None):
@@ -19,9 +19,13 @@ class RigRaymapHead(BaseHead):
                 tokens: (B, N, C)
                 cam2rig: optional (B, 3, 3) or (B, 4, 4) rotation/transform matrices
             Returns:
-                rig_rays: (B, N, 3) normalized rig-relative ray directions
+                rig_rays: (B, N, 6) rig-relative rays (origin, direction)
         """
-        rays = super().forward(tokens) # (B, N, 3)
+        rays = super().forward(tokens) # (B, N, 6)
+
+        # Split into origin and direction
+        origins = rays[..., :3]
+        directions = rays[..., 3:]
 
         # Transform from camera → rig frame if extrinsics given
         if cam2rig is not None:
@@ -31,24 +35,45 @@ class RigRaymapHead(BaseHead):
                 assert N % V == 0, f"Expected N divisible by frames (V), got N={N}, V={V}"
                 patches_per_frame = N // V
 
-                # slice rotation
-                R = cam2rig[..., :3, :3]  # always (B, V, 3, 3)
-                rays = rays.view(B, V, patches_per_frame, 3)
-                rays = torch.einsum('bvij,bvnj->bvni', R, rays)  # (B, V, P, 3)
-                rays = rays.reshape(B, N, 3)
+                # slice rotation and translation
+                R = cam2rig[..., :3, :3]  # (B, V, 3, 3)
+                t = cam2rig[..., :3, 3] if cam2rig.shape[-1] == 4 else None # (B, V, 3)
+
+                origins = origins.view(B, V, patches_per_frame, 3)
+                directions = directions.view(B, V, patches_per_frame, 3)
+                
+                # Apply rotation
+                origins = torch.einsum('bvij,bvnj->bvni', R, origins)
+                directions = torch.einsum('bvij,bvnj->bvni', R, directions)
+
+                # Apply translation to origin if available
+                if t is not None:
+                    origins = origins + t.unsqueeze(2)
+
+                origins = origins.reshape(B, N, 3)
+                directions = directions.reshape(B, N, 3)
+
             elif cam2rig.dim() == 3:  # (B, 3, 3) or (B, 4, 4)
                 R = cam2rig[..., :3, :3]
-                rays = torch.einsum('bij,bnj->bni', R, rays)
+                t = cam2rig[..., :3, 3] if cam2rig.shape[-1] == 4 else None
+                
+                origins = torch.einsum('bij,bnj->bni', R, origins)
+                directions = torch.einsum('bij,bnj->bni', R, directions)
+
+                if t is not None:
+                    origins = origins + t.unsqueeze(1)
             else:
                 raise ValueError(f"Unexpected cam2rig shape: {cam2rig.shape}")
 
-        # Normalize rays
+        # Normalize direction vectors
         if self.normalize:
-            # print("[DEBUG] pre-norm stats:", rays.mean().item(), rays.std().item())
-            rays = F.normalize(rays, dim=-1)
+            directions = F.normalize(directions, dim=-1)
+
+        # Concatenate back
+        rays = torch.cat([origins, directions], dim=-1)
 
         # sanity check
-        assert rays.shape[-1] == 3, f"Unexpected ray output shape: {rays.shape}"
+        assert rays.shape[-1] == 6, f"Unexpected ray output shape: {rays.shape}"
 
         return rays
 
