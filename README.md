@@ -169,12 +169,18 @@ Metrics:
 
 ---
 
-## 🔍 Rig Discovery (Coming Soon)
+## 🔍 Rig Discovery
 
 Run unsupervised rig calibration discovery:
 
 ```bash
-python scripts/infer_rig_discovery.py --data data/sample_inputs/
+python scripts/infer_rig_discovery.py --config configs/evaluate.yaml
+```
+
+- **Note**: for debugging or running it on a less powerful machine, you can run the command below
+
+```bash
+python scripts/infer_rig_discovery.py --config configs/evaluate_mini.yaml
 ```
 
 Outputs:
