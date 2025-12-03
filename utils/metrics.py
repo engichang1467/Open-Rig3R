@@ -50,3 +50,36 @@ def rig_discovery_accuracy(pred_pc, gt_pc):
 
     acc = correct / len(gt_pc)
     return torch.tensor(acc, device=pred_pc.device)
+
+
+def rig_maa(pred_poses, gt_poses):
+    """
+    Compute Rig Mean Angular Accuracy (mAA).
+    
+    Args:
+        pred_poses: list of dicts {'R': (3,3)}
+        gt_poses: list of dicts {'R': (3,3)}
+        
+    Returns:
+        scalar tensor (mean angular error in degrees)
+    """
+    if len(pred_poses) != len(gt_poses):
+        return torch.tensor(0.0)
+    
+    angular_errors = []
+    for pred, gt in zip(pred_poses, gt_poses):
+        R_pred = pred['R']
+        R_gt = gt['R']
+        
+        # Relative rotation: R_rel = R_pred @ R_gt.T
+        R_rel = torch.matmul(R_pred, R_gt.T)
+        
+        # Trace of R is 1 + 2cos(theta)
+        trace = torch.trace(R_rel)
+        cos_theta = (trace - 1) / 2.0
+        cos_theta = torch.clamp(cos_theta, -1.0, 1.0)
+        theta = torch.acos(cos_theta) # radians
+        
+        angular_errors.append(torch.rad2deg(theta))
+        
+    return torch.stack(angular_errors).mean()

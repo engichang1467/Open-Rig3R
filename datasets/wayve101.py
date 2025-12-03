@@ -81,22 +81,103 @@ class Wayve101Dataset(Dataset):
                 masks.append(mask)
         return torch.stack(masks)  # (N, 1, H, W)
 
-    def _load_metadata(self, seq_path):
-        # Placeholder: identity for now
-        num_tokens = len(self.camera_dirs) * self.n_frames  # e.g., 5 cameras * 2 frames = 10
+    def _read_colmap_extrinsics(self, seq_path):
+        """
+        Read images.bin from COLMAP to get extrinsics (R, t) for each image.
+        Returns:
+            dict: filename -> {'R': (3,3), 't': (3,)} (World-to-Camera)
+        """
+        images_bin = os.path.join(seq_path, 'colmap_sparse', 'rig', 'images.bin')
+        if not os.path.exists(images_bin):
+            return {}
 
-        # Start with identity matrices for each camera/frame
-        cam2rig = torch.eye(3).unsqueeze(0).repeat(num_tokens, 1, 1)  # shape (num_tokens, 3, 3)
+        extrinsics = {}
+        with open(images_bin, 'rb') as f:
+            num_reg_images = struct.unpack('<Q', f.read(8))[0]
+            for _ in range(num_reg_images):
+                # Image ID, Qw, Qx, Qy, Qz, tx, ty, tz, Camera ID, Name
+                binary_image_header = f.read(64)
+                image_id, qw, qx, qy, qz, tx, ty, tz, camera_id = struct.unpack('<IdddddddI', binary_image_header)
+                
+                name = ""
+                char = f.read(1)
+                while char != b'\x00':
+                    name += char.decode('utf-8')
+                    char = f.read(1)
+                
+                # Skip 2D points
+                num_points2D = struct.unpack('<Q', f.read(8))[0]
+                f.read(num_points2D * 24) # x, y, point3D_id (2 doubles + 1 uint64 = 16 + 8 = 24 bytes)
+
+                # Convert Quaternion to Rotation Matrix
+                # scipy Rotation uses (x, y, z, w)
+                from scipy.spatial.transform import Rotation as R
+                rot = R.from_quat([qx, qy, qz, qw])
+                R_mat = torch.tensor(rot.as_matrix(), dtype=torch.float32)
+                t_vec = torch.tensor([tx, ty, tz], dtype=torch.float32)
+                
+                extrinsics[name] = {'R': R_mat, 't': t_vec}
+                
+        return extrinsics
+
+    def _load_metadata(self, seq_path):
+        # Load real extrinsics from COLMAP
+        colmap_extrinsics = self._read_colmap_extrinsics(seq_path)
+        
+        # We need to match the sampled images to the COLMAP data
+        # _load_images samples frames but doesn't store filenames. 
+        # We need to replicate the sampling logic or modify _load_images to return filenames.
+        # For now, let's duplicate the sampling logic here to find the filenames.
+        
+        cam2rig_list = []
+        
+        for cam in self.camera_dirs:
+            cam_dir = os.path.join(seq_path, 'images', cam)
+            img_files = sorted(os.listdir(cam_dir))
+            selected_files = self._sample_frames(img_files)
+            
+            for f in selected_files:
+                # Filename in COLMAP usually includes the folder structure relative to the image path used in COLMAP
+                # In Wayve101, it might be "images/front-forward/00001.jpg" or just "front-forward/00001.jpg"
+                # We check a few variants
+                
+                # Variant 1: "images/cam/file"
+                name_v1 = os.path.join('images', cam, f)
+                # Variant 2: "cam/file"
+                name_v2 = os.path.join(cam, f)
+                
+                pose = None
+                if name_v1 in colmap_extrinsics:
+                    pose = colmap_extrinsics[name_v1]
+                elif name_v2 in colmap_extrinsics:
+                    pose = colmap_extrinsics[name_v2]
+                
+                if pose is None:
+                    # Fallback to identity if not found
+                    cam2rig_list.append(torch.eye(4))
+                else:
+                    # COLMAP gives World-to-Camera: P_c = R P_w + t
+                    # We want Camera-to-Rig (assuming World == Rig): P_r = R_inv (P_c - t)
+                    # T_c2r = [R^T | -R^T t]
+                    R_wc = pose['R']
+                    t_wc = pose['t']
+                    
+                    R_cr = R_wc.T
+                    t_cr = -torch.matmul(R_cr, t_wc)
+                    
+                    T_cr = torch.eye(4)
+                    T_cr[:3, :3] = R_cr
+                    T_cr[:3, 3] = t_cr
+                    
+                    cam2rig_list.append(T_cr)
+
+        cam2rig = torch.stack(cam2rig_list) # (N, 4, 4)
         
         # Apply metadata dropout
         if self.metadata_dropout > 0:
             for i in range(cam2rig.shape[0]):
                 if random.random() < self.metadata_dropout:
-                    cam2rig[i] = torch.eye(3)
-        
-        # Extract translation vector (last column)
-        cam2rig = cam2rig[:, :, -1]  # (num_tokens, 3)
-
+                    cam2rig[i] = torch.eye(4)
         
         return {'cam2rig': cam2rig}
 

@@ -183,7 +183,7 @@ class RigAwareTransformerDecoder(nn.Module):
         flat_reshaped = flat.view(B, N, C)
         rig_preds = self.rig_raymap_head(flat_reshaped, cam2rig=cam2rig)
 
-        rig_preds = rig_preds.view(B, frames, patches_per_frame, 3)
+        rig_preds = rig_preds.view(B, frames, patches_per_frame, 6)
  
         return {
             "pointmap": point_preds,

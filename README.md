@@ -169,17 +169,29 @@ Metrics:
 
 ---
 
-## 🔍 Rig Discovery (Coming Soon)
+## 🔍 Rig Discovery
 
 Run unsupervised rig calibration discovery:
 
 ```bash
-python scripts/infer_rig_discovery.py --data data/sample_inputs/
+python scripts/infer_rig_discovery.py --config configs/evaluate.yaml
 ```
 
-Outputs:
+- **Note**: for debugging or running it on a less powerful machine, you can run the command below
 
-* Clustered rig raymaps
+```bash
+python scripts/infer_rig_discovery.py --config configs/evaluate_mini.yaml
+```
+
+### Outputs
+
+The script calculates and reports:
+* **Rig ID Accuracy**: How well frames are clustered into cameras.
+* **Rig mAA**: Mean Angular Accuracy of the recovered rig extrinsics.
+* **Chamfer Distance**: Quality of the reconstructed 3D pointcloud.
+
+It also produces:
+* Clustered rig raymaps (internal representation)
 * Reconstructed 3D pointclouds
 * Estimated rig configurations (extrinsics)
 
