@@ -14,7 +14,7 @@ This repository is a **reimplementation** of the original [Rig3R paper (Li et al
   * Pointmaps (dense 3D coordinates),
   * Pose raymaps (global frame),
   * Rig raymaps (rig-relative frame).
-* **Rig discovery**: infers rig calibration from unordered image collections. (In progress)
+* **Rig discovery**: infers rig calibration from unordered image collections.
 * **Closed-form camera pose recovery** from raymaps. 
 * **Multi-task learning** with dropout-based metadata conditioning.
 
