@@ -183,9 +183,15 @@ python scripts/infer_rig_discovery.py --config configs/evaluate.yaml
 python scripts/infer_rig_discovery.py --config configs/evaluate_mini.yaml
 ```
 
-Outputs:
+### Outputs
 
-* Clustered rig raymaps
+The script calculates and reports:
+* **Rig ID Accuracy**: How well frames are clustered into cameras.
+* **Rig mAA**: Mean Angular Accuracy of the recovered rig extrinsics.
+* **Chamfer Distance**: Quality of the reconstructed 3D pointcloud.
+
+It also produces:
+* Clustered rig raymaps (internal representation)
 * Reconstructed 3D pointclouds
 * Estimated rig configurations (extrinsics)
 
