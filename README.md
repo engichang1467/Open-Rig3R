@@ -136,6 +136,8 @@ Recommended configuration values:
 * Scheduler: Cosine annealing
 * Dropout on metadata: 0.5
 
+- **Note**: Check out here for [more training details](docs/TRAINING_DETAILS.md)
+
 ---
 
 ## 🧪 Evaluation
