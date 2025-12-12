@@ -4,6 +4,12 @@ setup-env:
 setup-train:
 	sh ops/get_dust3r_pretrain.sh
 
+download-waymo-full:
+	sh ops/get_waymo_data_full.sh
+
+download-waymo-mini:
+	sh ops/get_waymo_data_mini.sh
+
 download-wayve101:
 	mkdir -p data/wayve_scenes_101
 	bash ops/download_wayve101.sh
@@ -12,7 +18,8 @@ install:
 	uv pip install --index-strategy unsafe-best-match -r requirements.txt
 
 train:
-	python scripts/train.py --config configs/train.yaml
+	python scripts/train.py --config configs/train_waymo.yaml 
+# python scripts/train.py --config configs/train.yaml
 
 evaluate:
 	python scripts/evaluate.py --config configs/evaluate.yaml
