@@ -52,9 +52,15 @@ make install
 
 ## 🧩 Training
 
-### Prepare CO3D Dataset
+### Prepare Dataset
 
-To work with a lightweight subset of the CO3D dataset (Common Objects in 3D), follow the steps below. These instructions are adapted from the [official CO3D GitHub repository](https://github.com/facebookresearch/co3d).
+For complete setup instructions:
+
+- Waymo: [Dataset Preparation – Waymo](docs/DATA_PREP.md#waymo)
+- CO3D: [Dataset Preparation – CO3D](docs/DATA_PREP.md#co3d)
+
+
+<!-- To work with a lightweight subset of the CO3D dataset (Common Objects in 3D), follow the steps below. These instructions are adapted from the [official CO3D GitHub repository](https://github.com/facebookresearch/co3d).
 
 #### 1. Create the dataset directory
 
@@ -107,7 +113,7 @@ python ./co3d/download_dataset.py \
   --single_sequence_subset
 ```
 
-This subset requires ~8.9 GB, significantly smaller than the full dataset (~5.5 TB).
+This subset requires ~8.9 GB, significantly smaller than the full dataset (~5.5 TB). -->
 
 ### Download the Pretrained DUSt3R Model
 
