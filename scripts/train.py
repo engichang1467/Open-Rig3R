@@ -262,12 +262,14 @@ for epoch in range(num_epochs):
                 for key, value in metadata.items():
                     if value is not None:
                         metadata[key] = value.to(device)
-                outputs = model(images, metadata)
+                with autocast(device_type=str(device)):
+                    outputs = model(images, metadata)
                 loss = compute_loss(outputs, pointcloud)
                 
             elif dataset_type == "waymo":
                 images, metadata, pointcloud = process_waymo_batch(batch, device, img_size)
-                outputs = model(images, metadata)
+                with autocast(device_type=str(device)):
+                    outputs = model(images, metadata)
                 loss = compute_loss(outputs, pointcloud)
             
             val_loss += loss.item()
