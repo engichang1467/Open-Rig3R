@@ -1,13 +1,28 @@
-batch_size: 28 # 8
-n_frames: 2 # 4
+# Dataset configuration
+dataset_type: "co3d"
+co3d_path: "data/co3d_mini"
+category: "hydrant" # Example category, change as needed
+sequence_ids: null
+
+# Training configuration
+batch_size: 28
+num_workers: 4
 epochs: 5
+n_frames: 2
+image_size: [128, 128]
+
+# Optimizer configuration
 optimizer:
-  type: AdamW
-  lr: 1e-4
+  lr: 0.0001
   weight_decay: 0.01
+
+# Scheduler configuration
 scheduler:
-  type: CosineAnnealingLR
   T_max: 50
-  eta_min: 1e-6
+  eta_min: 0.000001
+
+# Device
+device: "cpu"
+
+# Metadata dropout
 metadata_dropout: 0.5
-device: cpu
