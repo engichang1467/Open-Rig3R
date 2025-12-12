@@ -26,5 +26,7 @@ tensorboard>=2.20.0
 torch>=2.9.1
 torchvision>=0.24.1
 
+pyarrow>=22.0.0
+
 # Allow PyTorch CUDA 13 wheels
 --extra-index-url https://download.pytorch.org/whl/cu130
