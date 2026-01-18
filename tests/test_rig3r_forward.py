@@ -58,18 +58,21 @@ def test_rig3r_forward():
 
     # Check output keys
     assert "pointmap" in outputs
+    assert "pointmap_conf" in outputs  # DPT head also outputs confidence
     assert "pose_raymap" in outputs
     assert "rig_raymap" in outputs
 
     # Print output shapes
-    print("pointmap:", outputs["pointmap"].shape)
+    print("pointmap:", outputs["pointmap"].shape)  # (B, V, H*W, 3) dense predictions
+    print("pointmap_conf:", outputs["pointmap_conf"].shape)  # (B, V, H*W, 1) confidence
     print("pose_raymap:", outputs["pose_raymap"].shape)
     print("rig_raymap:", outputs["rig_raymap"].shape)
 
     # Basic shape checks
-    B, V, N_patches, C_embed = outputs["pointmap"].shape
+    B, V, N_pixels, C_embed = outputs["pointmap"].shape  # N_pixels = H*W (dense)
     assert B == 2
-    assert C_embed == 3  # 3D pointmap / 3D rays
+    assert C_embed == 3  # 3D pointmap
+    assert outputs["pointmap_conf"].shape[-1] == 1  # confidence is 1D
     print("Forward pass test passed!")
 
 if __name__ == "__main__":

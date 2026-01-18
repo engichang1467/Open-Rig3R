@@ -36,7 +36,9 @@ class Rig3R(nn.Module):
             num_layers=num_decoder_layers,
             num_heads=num_heads,
             metadata_dim=metadata_dim,
-            mlp_dim=mlp_dim
+            mlp_dim=mlp_dim,
+            img_size=img_size,
+            patch_size=patch_size
         )
     
     def forward(self, images, metadata=None):

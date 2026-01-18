@@ -11,8 +11,10 @@ from models.decoder_transformer import RigAwareTransformerDecoder
 torch.manual_seed(0)
 B = 2
 V = 2            # frames/views
-P = 16           # patches per frame (small for test)
+P = 16           # patches per frame (small for test) = 4x4 grid
 C = 64           # embed dim for quick test
+img_size = 32    # 4x4 patches with patch_size=8
+patch_size = 8
 tokens = torch.randn(B, V * P, C)
 
 # instantiate decoder with small dims for test
@@ -24,7 +26,9 @@ decoder = RigAwareTransformerDecoder(
     metadata_dim=None,
     metadata_tokens=2,
     metadata_dropout=0.3,
-    attn_dropout=0.0
+    attn_dropout=0.0,
+    img_size=img_size,
+    patch_size=patch_size
 )
 
 # dummy metadata: (B, M, metadata_dim)
@@ -35,7 +39,8 @@ metadata = {
 }
 
 out = decoder(tokens, frames=V, metadata=metadata, cam2rig=metadata["cam2rig"])
-print("pointmap shape:", out["pointmap"].shape)    # (B, V, P, 3)
-print("pose_raymap shape:", out["pose_raymap"].shape)
-print("rig_raymap shape:", out["rig_raymap"].shape)
+print("pointmap shape:", out["pointmap"].shape)    # (B, V, H*W, 3) dense predictions
+print("pointmap_conf shape:", out["pointmap_conf"].shape)  # (B, V, H*W, 1) confidence
+print("pose_raymap shape:", out["pose_raymap"].shape)  # (B, V, P, 3)
+print("rig_raymap shape:", out["rig_raymap"].shape)    # (B, V, P, 6)
 print("features shape:", out["features"].shape)    # (B, V, P, C)
