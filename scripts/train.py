@@ -143,10 +143,45 @@ scheduler = CosineAnnealingLR(optimizer,
 # -----------------------------
 # 5. Loss function (example)
 # -----------------------------
-def compute_loss(outputs, pointcloud_gt):
+def compute_loss(outputs, pointcloud_gt, img_size=128, patch_size=8):
+    """
+    Compute MSE loss between model output and ground truth pointcloud.
+
+    The model outputs dense predictions at image resolution (H*W points),
+    but ground truth may be sparse (P points where P = num_patches).
+    We downsample the model output to match the ground truth resolution.
+
+    Args:
+        outputs: dict with "pointmap" of shape (B, V, H*W, 3)
+        pointcloud_gt: ground truth of shape (B, V, P, 3) where P = (H/patch_size)^2
+        img_size: image height/width (assumes square)
+        patch_size: patch size used by the model
+    """
     if pointcloud_gt.numel() == 0:
         return torch.tensor(0.0, device=pointcloud_gt.device, requires_grad=True)
-    return nn.MSELoss()(outputs["pointmap"], pointcloud_gt)
+
+    pointmap = outputs["pointmap"]  # (B, V, H*W, 3)
+    B, V, _, C = pointmap.shape
+    H = W = img_size
+    patch_grid = img_size // patch_size  # e.g., 128 // 8 = 16
+
+    # Reshape to spatial format: (B, V, H*W, 3) -> (B*V, 3, H, W)
+    pointmap_spatial = pointmap.view(B * V, H, W, C).permute(0, 3, 1, 2)  # (B*V, 3, H, W)
+
+    # Downsample from (H, W) to (patch_grid, patch_grid) using average pooling
+    # This reduces 128x128 -> 16x16, matching the patch resolution
+    pointmap_downsampled = nn.functional.avg_pool2d(
+        pointmap_spatial,
+        kernel_size=patch_size,
+        stride=patch_size
+    )  # (B*V, 3, patch_grid, patch_grid)
+
+    # Reshape back to (B, V, P, 3) where P = patch_grid^2
+    P = patch_grid * patch_grid
+    pointmap_downsampled = pointmap_downsampled.permute(0, 2, 3, 1)  # (B*V, patch_grid, patch_grid, 3)
+    pointmap_downsampled = pointmap_downsampled.reshape(B, V, P, C)  # (B, V, P, 3)
+
+    return nn.MSELoss()(pointmap_downsampled, pointcloud_gt)
 
 
 # -----------------------------

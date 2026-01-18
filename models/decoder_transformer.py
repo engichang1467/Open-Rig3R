@@ -47,9 +47,10 @@ class RigAwareTransformerDecoder(nn.Module):
 
         Outputs:
         Dict with:
-            - pointmap: (B, V, P, 3)
+            - pointmap: (B, V, H*W, 3) dense pixel-level predictions
+            - pointmap_conf: (B, V, H*W, 1) per-pixel confidence
             - pose_raymap: (B, V, P, 3)
-            - rig_raymap: (B, V, P, 3)
+            - rig_raymap: (B, V, P, 6)
     """
     def __init__(
             self,
@@ -61,12 +62,16 @@ class RigAwareTransformerDecoder(nn.Module):
             metadata_tokens = 1,
             metadata_dropout = 0.5,
             head_hidden = None,
-            attn_dropout = 0.0 
+            attn_dropout = 0.0,
+            img_size = 384,
+            patch_size = 8
     ):
         super().__init__()
         self.embed_dim = embed_dim
         self.metadata_dim = metadata_dim
         self.metadata_tokens = metadata_tokens
+        self.img_size = img_size
+        self.patch_size = patch_size
 
         # --- Per-key projections ---
         self.key_projs = nn.ModuleDict({
@@ -86,7 +91,12 @@ class RigAwareTransformerDecoder(nn.Module):
             for _ in range(num_layers)
         ])
 
-        self.pointmap_head = PointMapHead(in_dim=embed_dim)
+        self.pointmap_head = PointMapHead(
+            in_dim=embed_dim,
+            hidden_dim=256,
+            img_size=img_size,
+            patch_size=patch_size
+        )
         self.pose_raymap_head = PoseRaymapHead(in_dim=embed_dim)
         self.rig_raymap_head = RigRaymapHead(in_dim=embed_dim)
 
@@ -176,17 +186,26 @@ class RigAwareTransformerDecoder(nn.Module):
         # apply heads per token
         # flatten tokens for head MLPs then reshape back
         flat = proc_patches.reshape(B * frames * patches_per_frame, C)  # (B*V*P, C)
-        point_preds = self.pointmap_head(flat).reshape(B, frames, patches_per_frame, 3)
+
+        # DPT pointmap head: expects (B*V, P, C), returns (B*V, H*W, 3), (B*V, H*W, 1)
+        dpt_input = proc_patches.reshape(B * frames, patches_per_frame, C)  # (B*V, P, C)
+        point_preds, conf_preds = self.pointmap_head(dpt_input)
+        # Reshape to (B, V, H*W, 3) and (B, V, H*W, 1)
+        H_W = point_preds.shape[1]  # H*W = img_size * img_size
+        point_preds = point_preds.view(B, frames, H_W, 3)
+        conf_preds = conf_preds.view(B, frames, H_W, 1)
+
         pose_preds = self.pose_raymap_head(flat).reshape(B, frames, patches_per_frame, 3)
-        
+
         N = frames * patches_per_frame
         flat_reshaped = flat.view(B, N, C)
         rig_preds = self.rig_raymap_head(flat_reshaped, cam2rig=cam2rig)
 
         rig_preds = rig_preds.view(B, frames, patches_per_frame, 6)
- 
+
         return {
-            "pointmap": point_preds,
+            "pointmap": point_preds,  # (B, V, H*W, 3) dense predictions
+            "pointmap_conf": conf_preds,  # (B, V, H*W, 1) confidence
             "pose_raymap": pose_preds,
             "rig_raymap": rig_preds,
             "features": proc_patches  # (B, V, P, C) for debugging / downstream heads if needed
