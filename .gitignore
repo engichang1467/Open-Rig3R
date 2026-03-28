@@ -2,6 +2,7 @@ data/
 notes/
 checkpoints/
 runs/
+personals/
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
