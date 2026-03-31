@@ -149,6 +149,27 @@ It also produces:
 
 ---
 
+## 🖼️ Visualization
+
+Inspect Rig3R predictions interactively with the Open3D visualization pipeline:
+
+```bash
+python scripts/visualize.py --config configs/evaluate.yaml
+```
+
+- **Note**: on headless machines or WSL, skip the viewer and export instead:
+
+```bash
+python scripts/visualize.py --config configs/evaluate.yaml \
+    --export outputs/scene.ply --no-show
+```
+
+Supports confidence-based filtering, four coloring modes (`rgb`, `per-camera`, `rig-cluster`, `confidence`), camera frustum overlays, and ray segment overlays.
+
+- **Note**: Check out here for [full visualization documentation](docs/VISUALIZATION.md)
+
+---
+
 ## 🧰 Citation
 
 If you use this reimplementation, please cite the original paper:
