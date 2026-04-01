@@ -4,6 +4,79 @@ This document explains how to use the Open3D visualization pipeline to inspect R
 
 ---
 
+## Installing Open3D on WSL2
+
+The interactive viewer requires a display. Follow these steps to set up X11 forwarding on WSL2 before running `scripts/visualize.py` without `--no-show`.
+
+1. Install [VcXsrv Windows X Server (XLaunch)](https://sourceforge.net/projects/vcxsrv/)
+
+2. Configure X11 via XLaunch:
+
+    **Screen 1: Multiple windows** → Next
+    ```
+    Display settings:  -multiwindow  (default)
+    Display number:  0
+    ```
+
+    **Screen 2: Uncheck Native OpenGL** ← **CRITICAL**
+    ```
+    [ ]  Native opengl   ← UNCHECK THIS (causes silent hang)
+    [✔] Start no client  ← Keep checked
+    ```
+
+    **Screen 3: Check Disable Access Control** ← **CRITICAL**
+    ```
+    [✔] Disable access control  ← CHECK THIS
+    [✔] Clipboard               ← Optional
+    [✔] Primary Selection       ← Optional
+    [✔] Extra Settings: add -wgl
+    ```
+
+    **Screen 4: Save Configuration** → Next → Finish
+
+3. Windows Firewall — when VcXsrv prompts, click **"Allow access"** and select **Private AND Public networks**.
+
+4. Add these lines to `~/.bashrc`:
+
+    ```bash
+    export XDG_SESSION_TYPE=x11
+    export DISPLAY=:0
+    export LIBGL_ALWAYS_INDIRECT=0
+    ```
+
+    Then reload your shell:
+
+    ```bash
+    source ~/.bashrc
+    ```
+
+5. Install X11 and OpenGL utilities:
+
+    ```bash
+    sudo apt-get install x11-apps mesa-utils
+    ```
+
+6. Install the Open3D viewer:
+
+    ```bash
+    wget https://github.com/isl-org/Open3D/releases/download/v0.19.0/open3d-viewer-0.19.0-Linux.deb
+    sudo mv ~/open3d-viewer-0.19.0-Linux.deb /tmp/
+    cd /tmp
+    sudo apt install -f ./open3d-viewer-0.19.0-Linux.deb
+    ```
+
+7. Verify the setup:
+
+    ```bash
+    echo $DISPLAY  # Should show: :0
+    xeyes          # Eyes should appear immediately
+    glxgears       # Gears should spin
+    wget https://raw.githubusercontent.com/McNopper/OpenGL/master/Binaries/teapot.obj
+    Open3D teapot.obj  # Teapot viewer should pop up
+    ```
+
+---
+
 ## Requirements
 
 Open3D and the other visualization dependencies are already listed in `requirements.txt`:
