@@ -101,13 +101,14 @@ pip install -r requirements.txt
 
 ```bash
 # Interactive viewer — RGB colors, default settings
-python scripts/visualize.py --config configs/evaluate.yaml
+python scripts/visualize.py --config configs/evaluate.yaml --device cpu
 
 # Headless export — useful on servers or WSL
 python scripts/visualize.py \
     --config configs/evaluate.yaml \
     --export outputs/scene000.ply \
-    --no-show
+    --no-show \
+    --device cpu
 ```
 
 The config file must contain at minimum:
@@ -184,7 +185,8 @@ python scripts/visualize.py \
     --config configs/evaluate.yaml \
     --color-mode rig-cluster \
     --n-clusters 3 \
-    --seq-idx 5
+    --seq-idx 1 \
+    --device cpu
 ```
 
 Cameras belonging to the same discovered rig cluster are colored identically. Camera frustums follow the same color scheme, making it easy to see which physical cameras were grouped together.
@@ -196,7 +198,8 @@ python scripts/visualize.py \
     --config configs/evaluate.yaml \
     --color-mode confidence \
     --cmap plasma \
-    --conf-percentile 90.0
+    --conf-percentile 90.0 \
+    --device cpu
 ```
 
 Points are colored from low (dark) to high (bright) confidence. Raising `--conf-percentile` keeps fewer, higher-quality points.
@@ -208,7 +211,8 @@ python scripts/visualize.py \
     --config configs/evaluate.yaml \
     --n-frames 5 \
     --export outputs/scene001.ply \
-    --no-show
+    --no-show \
+    --device cpu
 ```
 
 The exported PLY file can be opened in MeshLab, CloudCompare, or any other tool that reads point clouds.
@@ -221,7 +225,8 @@ python scripts/visualize.py \
     --rays \
     --n-ray-samples 128 \
     --ray-length 0.3 \
-    --no-frustums
+    --no-frustums \
+    --device cpu
 ```
 
 Each green segment starts at the predicted ray origin in rig space and extends along the predicted ray direction. This is useful for verifying that the rig raymap head is outputting consistent ray geometry.

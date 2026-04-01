@@ -6,9 +6,9 @@ raymaps, poses) into Open3D geometries, plus a top-level convenience function
 that runs the full pipeline.
 """
 
+import open3d as o3d  # must be imported before torch to avoid libstdc++ conflict
 import numpy as np
 import torch
-import open3d as o3d
 import matplotlib.cm as mpl_cm
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple

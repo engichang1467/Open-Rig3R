@@ -16,6 +16,7 @@ Example (headless export):
         --no-show
 """
 
+import open3d  # noqa: F401 — must be imported before torch to avoid libstdc++ conflict
 import argparse
 import sys
 import yaml
@@ -67,6 +68,12 @@ def parse_args() -> argparse.Namespace:
         "--image-size", type=int, nargs=2, default=[128, 128],
         metavar=("H", "W"),
         help="Image resolution for inference (must match training resolution).",
+    )
+    parser.add_argument(
+        "--device", type=str, default=None,
+        help="Device for inference: 'cpu' or 'cuda'. "
+             "Defaults to cuda if available. "
+             "Use --device cpu on WSL2 to avoid libdxcore/open3d conflicts.",
     )
 
     # Confidence
@@ -153,7 +160,10 @@ def main():
     args = parse_args()
     cfg = load_config(args.config)
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if args.device:
+        device = torch.device(args.device)
+    else:
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"[visualize] Device: {device}")
 
     # Resolve paths (CLI flags override config)
