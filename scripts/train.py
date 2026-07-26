@@ -23,7 +23,7 @@ from datasets.transform import get_train_transforms, get_val_transforms
 from models.rig3r import Rig3R  
 
 # --- Optional: logging ---
-from torch.utils.tensorboard import SummaryWriter
+import wandb
 
 # -----------------------------
 # 1. Load configs
@@ -205,12 +205,20 @@ def unpack_batch(batch, device):
 # -----------------------------
 # 7. Logging setup
 # -----------------------------
-writer = SummaryWriter(log_dir="runs/rig3r_train")
+run = wandb.init(
+    project=train_cfg.get("wandb_project", "open-rig3r"),
+    entity=train_cfg.get("wandb_entity"),
+    name=train_cfg.get("wandb_run_name"),
+    mode=train_cfg.get("wandb_mode", "online"),  # "offline" / "disabled" for no network
+    config={**train_cfg, "config_file": args.config, "device": str(device)},
+    dir="runs",
+)
 
 # -----------------------------
 # 8. Training loop
 # -----------------------------
 num_epochs = train_cfg.get("epochs", 50)
+global_step = 0
 
 for epoch in range(num_epochs):
     model.train()
@@ -230,11 +238,12 @@ for epoch in range(num_epochs):
 
         running_loss += loss.item()
         train_bar.set_postfix({"loss": f"{loss.item():.4f}"})
+        wandb.log({"train/batch_loss": loss.item()}, step=global_step)
+        global_step += 1
 
     scheduler.step()
     avg_loss = running_loss / len(train_loader)
     print(f"Epoch [{epoch+1}/{num_epochs}] - Train Loss: {avg_loss:.4f}")
-    writer.add_scalar("Loss/train", avg_loss, epoch)
 
     # -----------------------------
     # 9. Validation loop
@@ -255,7 +264,16 @@ for epoch in range(num_epochs):
 
     avg_val_loss = val_loss / len(val_loader)
     print(f"Epoch [{epoch+1}/{num_epochs}] - Val Loss: {avg_val_loss:.4f}")
-    writer.add_scalar("Loss/val", avg_val_loss, epoch)
+
+    wandb.log(
+        {
+            "epoch": epoch + 1,
+            "train/loss": avg_loss,
+            "val/loss": avg_val_loss,
+            "lr": scheduler.get_last_lr()[0],
+        },
+        step=global_step,
+    )
 
     # -----------------------------
     # 10. Save checkpoints
@@ -265,5 +283,12 @@ for epoch in range(num_epochs):
         os.makedirs("checkpoints", exist_ok=True)
         torch.save(model.state_dict(), ckpt_path)
 
-writer.close()
+        artifact = wandb.Artifact(
+            f"rig3r-{run.id}", type="model",
+            metadata={"epoch": epoch + 1, "val_loss": avg_val_loss},
+        )
+        artifact.add_file(ckpt_path)
+        run.log_artifact(artifact, aliases=["latest", f"epoch-{epoch+1}"])
+
+run.finish()
 print("Training finished!")
