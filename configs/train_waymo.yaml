@@ -1,14 +1,14 @@
 # Dataset configuration
 dataset_type: "waymo"
-waymo_path: "data/waymo_mini"
-waymo_component: "camera_image"
+waymo_path: "/data/waymo_mini"  # JPEG tree produced by ops/parquet2jpeg.py
+waymo_cameras: null  # null means the full rig: FRONT, FRONT_LEFT, FRONT_RIGHT, SIDE_LEFT, SIDE_RIGHT
 sequence_ids: null  # null means load all sequences, or provide list like ["segment_id_1", "segment_id_2"]
 
 # Training configuration
 batch_size: 4
 num_workers: 4
 epochs: 1 #50
-n_frames: 2
+n_frames: 2  # consecutive timestamps per sample; views = n_frames * num_cameras
 image_size: [128, 128]
 
 # Optimizer configuration

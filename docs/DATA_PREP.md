@@ -21,6 +21,8 @@ gsutil config
 
 ### 3. Install the dataset
 
+Each target downloads the parquet files, then exports the camera images to JPEG.
+
 #### Original Training Dataset (~1 TB)
 
 ```bash
@@ -31,6 +33,51 @@ make download-waymo-full
 
 ```bash
 make download-waymo-mini
+```
+
+### 4. The JPEG export
+
+Training reads images, not parquet. `ops/parquet2jpeg.py` pulls the
+`[CameraImageComponent].image` column out of the `camera_image` parquet files and
+writes the JPEG bytes straight to disk — no decode/re-encode, the payload is
+already JPEG. The `make` targets above run it for you; run it directly to
+re-export, or to use a different location:
+
+```bash
+python ops/parquet2jpeg.py --src data/waymo_mini --dst /data/waymo_mini
+python ops/parquet2jpeg.py --src data/waymo_mini --dst /data/waymo_mini --splits validation
+```
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--src` | `data/waymo_mini` | Root of the downloaded parquet dataset |
+| `--dst` | `/data/waymo_mini` | Where to write the JPEG tree |
+| `--splits` | `train validation` | Splits to convert |
+
+Output layout:
+
+```
+<dst>/<split>/<segment>/<CAMERA>/<frame_timestamp_micros>.jpeg
+```
+
+with `<CAMERA>` one of `FRONT`, `FRONT_LEFT`, `FRONT_RIGHT`, `SIDE_LEFT`, `SIDE_RIGHT`.
+Re-running overwrites existing files in place.
+
+### 5. Point the training config at it
+
+`waymo_path` in [`configs/train_waymo.yaml`](../configs/train_waymo.yaml) must match
+your `--dst`:
+
+```yaml
+waymo_path: "/data/waymo_mini"
+waymo_cameras: null   # null = full 5-camera rig
+n_frames: 2           # consecutive timestamps per sample; views = n_frames * num_cameras
+```
+
+Then:
+
+```bash
+make train
 ```
 
 

@@ -71,42 +71,44 @@ if dataset_type == "co3d":
     )
 
 elif dataset_type == "waymo":
-    waymo_path = Path.cwd().joinpath(train_cfg.get("waymo_path", "data/waymo_mini"))
-    component = train_cfg.get("waymo_component", "camera_image")
+    waymo_path = Path.cwd().joinpath(train_cfg.get("waymo_path", "/data/waymo_mini"))
+    cameras = train_cfg.get("waymo_cameras", None)
     sequence_ids = train_cfg.get("sequence_ids", None)
-    
+
     train_dataset = WaymoDataset(
         root_dir=waymo_path,
         split="train",
-        component=component,
+        cameras=cameras,
         sequence_ids=sequence_ids,
-        n_frames=train_cfg["n_frames"]
+        n_frames=train_cfg["n_frames"],
+        image_size=img_size,
+        transforms=get_train_transforms(image_size=img_size)
     )
-    
+
     val_dataset = WaymoDataset(
         root_dir=waymo_path,
         split="validation",
-        component=component,
+        cameras=cameras,
         sequence_ids=sequence_ids,
-        n_frames=train_cfg["n_frames"]
+        n_frames=train_cfg["n_frames"],
+        image_size=img_size,
+        transforms=get_val_transforms(image_size=img_size)
     )
 else:
     raise ValueError(f"Unknown dataset type: {dataset_type}")
 
 train_loader = DataLoader(
-    train_dataset, 
-    batch_size=train_cfg["batch_size"], 
-    shuffle=True, 
-    num_workers=train_cfg.get("num_workers", 0),
-    collate_fn=None if dataset_type == "co3d" else lambda x: x  # waymo returns dicts
+    train_dataset,
+    batch_size=train_cfg["batch_size"],
+    shuffle=True,
+    num_workers=train_cfg.get("num_workers", 0)
 )
 
 val_loader = DataLoader(
-    val_dataset, 
-    batch_size=train_cfg["batch_size"], 
-    shuffle=False, 
-    num_workers=train_cfg.get("num_workers", 0),
-    collate_fn=None if dataset_type == "co3d" else lambda x: x
+    val_dataset,
+    batch_size=train_cfg["batch_size"],
+    shuffle=False,
+    num_workers=train_cfg.get("num_workers", 0)
 )
 
 # -----------------------------
@@ -185,51 +187,20 @@ def compute_loss(outputs, pointcloud_gt, img_size=128, patch_size=8):
 
 
 # -----------------------------
-# 6. Waymo data processing helper
+# 6. Batch unpacking
 # -----------------------------
-def process_waymo_batch(batch_list, device, img_size):
-    """
-    Process raw waymo parquet data into model inputs.
-    
-    Args:
-        batch_list: List of dictionaries from WaymoDataset, each containing 'frames'
-        device: torch device
-        img_size: tuple of (H, W)
-        
-    Returns:
-        images: (B, N, 3, H, W) tensor
-        metadata: dict with camera parameters (only cam2rig)
-        pointcloud: (B, num_points, 3) dummy pointcloud for now
-    """
-    batch_size = len(batch_list)
-    n_frames = len(batch_list[0]['frames'])
+def unpack_batch(batch, device):
+    """Move a collated sample dict onto the device. Same shape for co3d and waymo."""
+    images = batch["images"].to(device)
+    pointcloud = batch["pointcloud"].to(device)
 
-    # determine dtype based on device - match autocast default
-    dtype = torch.bfloat16 if device.type == 'cpu' else torch.float16
-    
-    # create dummy data matching model's expected format
-    # shape: (B, N, 3, H, W)
-    images = torch.randn(batch_size, n_frames, 3, *img_size, dtype=dtype).to(device)
-    
-    # create cam2rig: (B, N, 3, 3) - 3x3 rotation part of transformation
-    # then reshape to (B, N*3, 3) for the decoder
-    cam2rig_3x3 = torch.eye(3, dtype=dtype, device=device).unsqueeze(0).unsqueeze(0).repeat(batch_size, n_frames, 1, 1)
-    
-    # reshape: (B, N, 3, 3) -> (B, N*3, 3)
-    cam2rig = cam2rig_3x3.reshape(batch_size, n_frames * 3, 3) #.to(device)
-    
-    metadata = {
-        "cam2rig": cam2rig
-    }
-    
-    # dummy pointcloud - now match model output shape (B, N, P, 3)
-    # P = number of patches = (H // patch_size) * (W // patch_size)
-    # assuming patch_size=8 and img_size from config
-    patch_size = 8
-    num_patches = (img_size[0] // patch_size) * (img_size[1] // patch_size)
-    pointcloud = torch.randn(batch_size, n_frames, num_patches, 3, dtype=dtype).to(device)
-    
+    metadata = batch["metadata"]
+    for key, value in metadata.items():
+        if value is not None:
+            metadata[key] = value.to(device)
+
     return images, metadata, pointcloud
+
 
 # -----------------------------
 # 7. Logging setup
@@ -247,30 +218,13 @@ for epoch in range(num_epochs):
     train_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]", leave=False)
     
     for batch_idx, batch in enumerate(train_bar):
-        if dataset_type == "co3d":
-            images = batch["images"].to(device)
-            metadata = batch["metadata"]
-            pointcloud = batch["pointcloud"].to(device)
+        images, metadata, pointcloud = unpack_batch(batch, device)
 
-            # Move metadata tensors to device
-            for key, value in metadata.items():
-                if value is not None:
-                    metadata[key] = value.to(device)
+        optimizer.zero_grad()
+        with autocast(device_type=str(device)):
+            outputs = model(images, metadata)
+        loss = compute_loss(outputs, pointcloud, img_size=img_size[0])
 
-            optimizer.zero_grad()
-            with autocast(device_type=str(device)):
-                outputs = model(images, metadata)
-            loss = compute_loss(outputs, pointcloud)
-            
-        elif dataset_type == "waymo":
-            # Process waymo batch - now with correct shape
-            images, metadata, pointcloud = process_waymo_batch(batch, device, img_size)
-            
-            optimizer.zero_grad()
-            with autocast(device_type=str(device)):
-                outputs = model(images, metadata)
-            loss = compute_loss(outputs, pointcloud)
-        
         loss.backward()
         optimizer.step()
 
@@ -290,23 +244,12 @@ for epoch in range(num_epochs):
     val_bar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]", leave=False)
     with torch.no_grad():
         for batch in val_bar:
-            if dataset_type == "co3d":
-                images = batch["images"].to(device)
-                metadata = batch["metadata"]
-                pointcloud = batch["pointcloud"].to(device)
-                for key, value in metadata.items():
-                    if value is not None:
-                        metadata[key] = value.to(device)
-                with autocast(device_type=str(device)):
-                    outputs = model(images, metadata)
-                loss = compute_loss(outputs, pointcloud)
-                
-            elif dataset_type == "waymo":
-                images, metadata, pointcloud = process_waymo_batch(batch, device, img_size)
-                with autocast(device_type=str(device)):
-                    outputs = model(images, metadata)
-                loss = compute_loss(outputs, pointcloud)
-            
+            images, metadata, pointcloud = unpack_batch(batch, device)
+
+            with autocast(device_type=str(device)):
+                outputs = model(images, metadata)
+            loss = compute_loss(outputs, pointcloud, img_size=img_size[0])
+
             val_loss += loss.item()
             val_bar.set_postfix({"val_loss": f"{loss.item():.4f}"})
 
