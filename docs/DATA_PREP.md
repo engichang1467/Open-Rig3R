@@ -61,6 +61,7 @@ Output layout:
 ```
 <dst>/<split>/<segment>/<CAMERA>/<frame_timestamp_micros>.jpeg
 <dst>/<split>/<segment>/calibration.json
+<dst>/<split>/<segment>/poses.json
 ```
 
 with `<CAMERA>` one of `FRONT`, `FRONT_LEFT`, `FRONT_RIGHT`, `SIDE_LEFT`, `SIDE_RIGHT`.
@@ -69,9 +70,19 @@ Re-running overwrites existing files in place.
 `calibration.json` holds, per camera, the 4x4 `cam2rig` (Waymo's
 `extrinsic.transform`, a `vehicle_from_camera` — the rig frame *is* the vehicle
 frame) plus `f_u`/`f_v`/`c_u`/`c_v` and native `width`/`height`. Intrinsics are
-stored unscaled, so anything that resizes the images must scale them itself.
-`WaymoDataset` raises if this file is missing — a tree exported before calibration
-support needs a re-run.
+stored unscaled; `WaymoDataset` rescales them to `image_size` on load.
+
+`poses.json` maps each frame timestamp to a 4x4 `world_from_vehicle`. Without it
+every frame's rays would be identical and pose supervision would be degenerate,
+so the loader skips timestamps that have no pose.
+
+Both files are required: `WaymoDataset` raises if either is missing, and a tree
+exported before they existed needs a re-run.
+
+Together they are what supervises training — `utils/raymap.py` turns calibration
+plus poses into the `rig_raymap` and `pose_raymap` targets that `MultiTaskLoss`
+scores. Pointmap supervision still needs the `lidar` component and is skipped for
+now, so only two of the three loss terms are active on Waymo.
 
 ### 5. Point the training config at it
 

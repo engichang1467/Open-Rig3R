@@ -30,11 +30,18 @@ def mock_cam2rig(index):
     return transform
 
 
+def mock_world_from_rig(index):
+    """A rig driving straight along world +x, one metre per frame."""
+    transform = torch.eye(4)
+    transform[0, 3] = float(index)
+    return transform
+
+
 def create_mock_waymo_dataset(tmp_path):
     """
     Creates a minimal mock waymo JPEG tree for testing.
     Matches ops/parquet2jpeg.py output: root/split/segment/CAMERA/<timestamp>.jpeg
-    plus root/split/segment/calibration.json
+    plus root/split/segment/{calibration,poses}.json
     """
     for split in SPLITS:
         for sequence_id in SEQUENCE_IDS:
@@ -55,8 +62,14 @@ def create_mock_waymo_dataset(tmp_path):
                 }
                 for i, camera in enumerate(CAMERAS)
             }
-            path = tmp_path / split / sequence_id / "calibration.json"
-            path.write_text(json.dumps(calibration))
+            segment_dir = tmp_path / split / sequence_id
+            (segment_dir / "calibration.json").write_text(json.dumps(calibration))
+
+            poses = {
+                str(timestamp): mock_world_from_rig(i).flatten().tolist()
+                for i, timestamp in enumerate(TIMESTAMPS)
+            }
+            (segment_dir / "poses.json").write_text(json.dumps(poses))
 
     return tmp_path
 
@@ -141,6 +154,51 @@ def test_cam2rig_follows_camera_order(mock_data):
     expected = torch.stack([mock_cam2rig(CAMERAS.index(c)) for c in cameras])
     assert torch.allclose(cam2rig, expected), f"cam2rig out of order: {cam2rig[:, 0, 3]}"
     print("✓ test_cam2rig_follows_camera_order passed")
+
+
+@with_mock_dataset
+def test_intrinsics_scaled_to_image_size(mock_data):
+    """Intrinsics are exported at native resolution, so the loader must rescale"""
+    dataset = WaymoDataset(root_dir=mock_data, split="train", n_frames=1, image_size=(64, 64))
+    intrinsics = dataset[0]["intrinsics"]
+
+    assert intrinsics.shape == (len(CAMERAS), 4), f"Got {tuple(intrinsics.shape)}"
+    # mock calibration is f=2000, c=(960, 640) at 1920x1280 -> 64x64
+    expected = torch.tensor([2000 / 30, 2000 / 20, 960 / 30, 640 / 20])
+    assert torch.allclose(intrinsics[0], expected), f"Expected {expected}, got {intrinsics[0]}"
+    print("✓ test_intrinsics_scaled_to_image_size passed")
+
+
+@with_mock_dataset
+def test_world_from_rig_is_per_frame(mock_data):
+    """Rig pose varies per timestamp and is shared by every camera in that frame"""
+    dataset = WaymoDataset(root_dir=mock_data, split="train", n_frames=2)
+    world_from_rig = dataset[0]["world_from_rig"]
+
+    n_cameras = len(CAMERAS)
+    assert world_from_rig.shape == (2 * n_cameras, 4, 4), f"Got {tuple(world_from_rig.shape)}"
+    assert torch.allclose(world_from_rig[:n_cameras], world_from_rig[0]), (
+        "All cameras in a frame share one rig pose"
+    )
+    displacement = world_from_rig[n_cameras, 0, 3] - world_from_rig[0, 0, 3]
+    assert displacement != 0, "Rig pose should differ between frames, or pose targets are static"
+    print("✓ test_world_from_rig_is_per_frame passed")
+
+
+@with_mock_dataset
+def test_dataset_missing_poses(mock_data):
+    """A segment exported before pose support fails loudly, not silently"""
+    for path in mock_data.glob("train/*/poses.json"):
+        path.unlink()
+
+    error_raised = False
+    try:
+        WaymoDataset(root_dir=mock_data, split="train")
+    except ValueError as e:
+        error_raised = "Poses not found" in str(e)
+
+    assert error_raised, "Should raise ValueError when poses.json is missing"
+    print("✓ test_dataset_missing_poses passed")
 
 
 @with_mock_dataset
@@ -262,6 +320,9 @@ def run_all_tests():
         test_dataset_getitem,
         test_cam2rig_is_real_calibration,
         test_cam2rig_follows_camera_order,
+        test_intrinsics_scaled_to_image_size,
+        test_world_from_rig_is_per_frame,
+        test_dataset_missing_poses,
         test_dataset_missing_calibration,
         test_images_are_decoded_pixels,
         test_dataset_n_frames,

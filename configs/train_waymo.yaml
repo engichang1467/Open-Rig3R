@@ -10,6 +10,7 @@ num_workers: 4
 epochs: 1 #50
 n_frames: 2  # consecutive timestamps per sample; views = n_frames * num_cameras
 image_size: [128, 128]
+patch_size: 8  # must match the model; also sets the raymap target resolution
 
 # Optimizer configuration
 optimizer:

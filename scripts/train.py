@@ -20,7 +20,9 @@ from datasets.waymo import WaymoDataset
 from datasets.transform import get_train_transforms, get_val_transforms
 
 # --- Import model ---
-from models.rig3r import Rig3R  
+from models.rig3r import Rig3R
+from models.losses import MultiTaskLoss
+from utils.raymap import build_raymap_targets
 
 # --- Optional: logging ---
 import wandb
@@ -48,6 +50,7 @@ dataset_type = train_cfg.get("dataset_type", "co3d")
 # 2. Prepare datasets
 # -----------------------------
 img_size = tuple(train_cfg.get("image_size", [128, 128]))
+patch_size = train_cfg.get("patch_size", 8)
 
 if dataset_type == "co3d":
     co3d_path = Path.cwd().joinpath("data/co3d")
@@ -120,7 +123,7 @@ pretrain_ckpt_path = Path.cwd().joinpath("checkpoints/pretrained/DUSt3R_ViTLarge
 model = Rig3R(
     encoder_ckpt=pretrain_ckpt_path,
     img_size=img_size[0],
-    patch_size=8,
+    patch_size=patch_size,
     embed_dim=128,
     metadata_dim=128,
     num_decoder_layers=2,
@@ -143,47 +146,67 @@ scheduler = CosineAnnealingLR(optimizer,
                               eta_min=float(train_cfg["scheduler"]["eta_min"]))
 
 # -----------------------------
-# 5. Loss function (example)
+# 5. Loss function
 # -----------------------------
-def compute_loss(outputs, pointcloud_gt, img_size=128, patch_size=8):
+criterion = MultiTaskLoss()
+
+
+def downsample_pointmap(pointmap, img_size, patch_size):
+    """Dense (B, V, H*W, 3) prediction -> (B, V, P, 3) at patch resolution.
+
+    The pointmap head predicts at image resolution, but pointcloud ground truth
+    is sparse (P points, P = (img_size / patch_size)^2), so average-pool the
+    prediction down to meet it.
     """
-    Compute MSE loss between model output and ground truth pointcloud.
-
-    The model outputs dense predictions at image resolution (H*W points),
-    but ground truth may be sparse (P points where P = num_patches).
-    We downsample the model output to match the ground truth resolution.
-
-    Args:
-        outputs: dict with "pointmap" of shape (B, V, H*W, 3)
-        pointcloud_gt: ground truth of shape (B, V, P, 3) where P = (H/patch_size)^2
-        img_size: image height/width (assumes square)
-        patch_size: patch size used by the model
-    """
-    if pointcloud_gt.numel() == 0:
-        return torch.tensor(0.0, device=pointcloud_gt.device, requires_grad=True)
-
-    pointmap = outputs["pointmap"]  # (B, V, H*W, 3)
     B, V, _, C = pointmap.shape
     H = W = img_size
     patch_grid = img_size // patch_size  # e.g., 128 // 8 = 16
 
-    # Reshape to spatial format: (B, V, H*W, 3) -> (B*V, 3, H, W)
-    pointmap_spatial = pointmap.view(B * V, H, W, C).permute(0, 3, 1, 2)  # (B*V, 3, H, W)
+    # (B, V, H*W, 3) -> (B*V, 3, H, W)
+    spatial = pointmap.view(B * V, H, W, C).permute(0, 3, 1, 2)
+    pooled = nn.functional.avg_pool2d(spatial, kernel_size=patch_size, stride=patch_size)
 
-    # Downsample from (H, W) to (patch_grid, patch_grid) using average pooling
-    # This reduces 128x128 -> 16x16, matching the patch resolution
-    pointmap_downsampled = nn.functional.avg_pool2d(
-        pointmap_spatial,
-        kernel_size=patch_size,
-        stride=patch_size
-    )  # (B*V, 3, patch_grid, patch_grid)
+    # (B*V, 3, patch_grid, patch_grid) -> (B, V, P, 3)
+    return pooled.permute(0, 2, 3, 1).reshape(B, V, patch_grid * patch_grid, C)
 
-    # Reshape back to (B, V, P, 3) where P = patch_grid^2
-    P = patch_grid * patch_grid
-    pointmap_downsampled = pointmap_downsampled.permute(0, 2, 3, 1)  # (B*V, patch_grid, patch_grid, 3)
-    pointmap_downsampled = pointmap_downsampled.reshape(B, V, P, C)  # (B, V, P, 3)
 
-    return nn.MSELoss()(pointmap_downsampled, pointcloud_gt)
+def compute_loss(outputs, batch, device, img_size, patch_size):
+    """Score whatever supervision this batch actually carries.
+
+    Waymo currently supplies raymap targets (from calibration + rig poses) but no
+    pointcloud; CO3D supplies a pointcloud but no calibration. MultiTaskLoss skips
+    any term missing from either side, so each dataset trains on what it has.
+    """
+    preds = dict(outputs)
+    targets = {}
+
+    pointcloud = batch["pointcloud"].to(device)
+    if pointcloud.numel() > 0:
+        preds["pointmap"] = downsample_pointmap(preds["pointmap"], img_size[0], patch_size)
+        targets["pointmap"] = pointcloud
+
+    if "intrinsics" in batch:
+        targets.update(build_raymap_targets(
+            cam2rig=batch["metadata"]["cam2rig"].to(device),
+            intrinsics=batch["intrinsics"].to(device),
+            world_from_rig=batch["world_from_rig"].to(device),
+            image_size=img_size,
+            patch_size=patch_size,
+        ))
+
+    total, loss_dict = criterion(preds, targets)
+
+    # with no matching target MultiTaskLoss returns a plain 0.0 float and the
+    # optimizer becomes a no-op - the exact failure this pipeline shipped with.
+    # grad_fn is only expected under grad; validation runs inside no_grad.
+    connected = torch.is_tensor(total) and (
+        total.grad_fn is not None or not torch.is_grad_enabled()
+    )
+    assert connected, (
+        f"No supervision in this batch (targets: {sorted(targets)}). "
+        f"Export calibration/poses for raymaps, or a pointcloud for pointmaps."
+    )
+    return total, loss_dict
 
 
 # -----------------------------
@@ -192,14 +215,13 @@ def compute_loss(outputs, pointcloud_gt, img_size=128, patch_size=8):
 def unpack_batch(batch, device):
     """Move a collated sample dict onto the device. Same shape for co3d and waymo."""
     images = batch["images"].to(device)
-    pointcloud = batch["pointcloud"].to(device)
 
     metadata = batch["metadata"]
     for key, value in metadata.items():
         if value is not None:
             metadata[key] = value.to(device)
 
-    return images, metadata, pointcloud
+    return images, metadata
 
 
 # -----------------------------
@@ -226,19 +248,22 @@ for epoch in range(num_epochs):
     train_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]", leave=False)
     
     for batch_idx, batch in enumerate(train_bar):
-        images, metadata, pointcloud = unpack_batch(batch, device)
+        images, metadata = unpack_batch(batch, device)
 
         optimizer.zero_grad()
         with autocast(device_type=str(device)):
             outputs = model(images, metadata)
-        loss = compute_loss(outputs, pointcloud, img_size=img_size[0])
+        loss, loss_dict = compute_loss(outputs, batch, device, img_size, patch_size)
 
         loss.backward()
         optimizer.step()
 
         running_loss += loss.item()
         train_bar.set_postfix({"loss": f"{loss.item():.4f}"})
-        wandb.log({"train/batch_loss": loss.item()}, step=global_step)
+        wandb.log(
+            {f"train/batch_{name}": value.item() for name, value in loss_dict.items()},
+            step=global_step,
+        )
         global_step += 1
 
     scheduler.step()
@@ -253,11 +278,11 @@ for epoch in range(num_epochs):
     val_bar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]", leave=False)
     with torch.no_grad():
         for batch in val_bar:
-            images, metadata, pointcloud = unpack_batch(batch, device)
+            images, metadata = unpack_batch(batch, device)
 
             with autocast(device_type=str(device)):
                 outputs = model(images, metadata)
-            loss = compute_loss(outputs, pointcloud, img_size=img_size[0])
+            loss, _ = compute_loss(outputs, batch, device, img_size, patch_size)
 
             val_loss += loss.item()
             val_bar.set_postfix({"val_loss": f"{loss.item():.4f}"})

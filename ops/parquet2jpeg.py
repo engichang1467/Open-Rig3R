@@ -1,7 +1,8 @@
-"""Extract Waymo camera_image parquet -> JPEG files, plus per-segment calibration.
+"""Extract Waymo camera_image parquet -> JPEG files, plus per-segment geometry.
 
 Layout: DST/<split>/<segment>/<camera>/<frame_timestamp_micros>.jpeg
         DST/<split>/<segment>/calibration.json
+        DST/<split>/<segment>/poses.json
 """
 
 import argparse
@@ -34,6 +35,11 @@ CALIB_COLS = [
     f"{CALIB}.height",
 ]
 
+POSE_COLS = [
+    "key.frame_timestamp_micros",
+    "[VehiclePoseComponent].world_from_vehicle.transform",
+]
+
 
 def convert_calibration(src, dst, split):
     """Write one calibration.json per segment: 5 rows, static for the whole segment.
@@ -62,6 +68,28 @@ def convert_calibration(src, dst, split):
         out_dir = dst / split / path.stem
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "calibration.json").write_text(json.dumps(calibration, indent=2))
+
+
+def convert_poses(src, dst, split):
+    """Write one poses.json per segment: world_from_vehicle 4x4 per frame timestamp.
+
+    This is what makes rays from different frames comparable, so pose supervision
+    is not just the static rig repeated.
+    """
+    files = sorted((src / split / "vehicle_pose").glob("*.parquet"))
+
+    for path in tqdm(files, desc=f"{split} poses"):
+        rows = pq.read_table(path, columns=POSE_COLS).to_pylist()
+        poses = {
+            str(row["key.frame_timestamp_micros"]): row[
+                "[VehiclePoseComponent].world_from_vehicle.transform"
+            ]
+            for row in rows
+        }
+
+        out_dir = dst / split / path.stem
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "poses.json").write_text(json.dumps(poses))
 
 
 def convert_split(src, dst, split):
@@ -96,3 +124,4 @@ if __name__ == "__main__":
     for split in args.splits:
         convert_split(args.src, args.dst, split)
         convert_calibration(args.src, args.dst, split)
+        convert_poses(args.src, args.dst, split)

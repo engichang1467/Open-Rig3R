@@ -18,6 +18,7 @@ class WaymoDataset(Dataset):
     Expected layout:
         root_dir/<split>/<segment>/<CAMERA>/<frame_timestamp_micros>.jpeg
         root_dir/<split>/<segment>/calibration.json
+        root_dir/<split>/<segment>/poses.json
 
     One sample is a rig capture window: `n_frames` consecutive timestamps of one
     segment, each contributing one image per camera. Views per sample is
@@ -67,13 +68,23 @@ class WaymoDataset(Dataset):
 
         # index of (segment_dir, [timestamps]) sliding windows
         self.samples: List[Tuple[Path, List[str]]] = []
-        # segment name -> (n_cameras, 4, 4), static for the whole segment
-        self.cam2rig: Dict[str, torch.Tensor] = {}
+        # segment name -> per-camera geometry, static for the whole segment
+        self.cam2rig: Dict[str, torch.Tensor] = {}  # (n_cameras, 4, 4)
+        self.intrinsics: Dict[str, torch.Tensor] = {}  # (n_cameras, 4)
+        # segment name -> {timestamp: world_from_rig (4, 4)}
+        self.poses: Dict[str, Dict[str, torch.Tensor]] = {}
         for segment in segments:
             timestamps = self._shared_timestamps(segment)
             if not timestamps:
+                continue  # incomplete rig
+            poses = self._load_poses(segment)
+            timestamps = [t for t in timestamps if t in poses]
+            if not timestamps:
                 continue
-            self.cam2rig[segment.name] = self._load_cam2rig(segment)
+            self.cam2rig[segment.name], self.intrinsics[segment.name] = (
+                self._load_calibration(segment)
+            )
+            self.poses[segment.name] = poses
             for i in range(len(timestamps) - n_frames + 1):
                 self.samples.append((segment, timestamps[i : i + n_frames]))
 
@@ -108,23 +119,37 @@ class WaymoDataset(Dataset):
 
         images = torch.stack(images)  # (n_frames * n_cameras, 3, H, W)
 
-        # the rig is rigid, so one block of per-camera extrinsics tiles over frames,
+        # the rig is rigid, so one block of per-camera geometry tiles over frames,
         # matching the (timestamp, camera) order the images were stacked in
-        cam2rig = self.cam2rig[segment.name].repeat(len(timestamps), 1, 1)
+        n_frames = len(timestamps)
+        cam2rig = self.cam2rig[segment.name].repeat(n_frames, 1, 1)
+        intrinsics = self.intrinsics[segment.name].repeat(n_frames, 1)
+
+        # the rig moves, so world_from_rig is per timestamp, held across the cameras
+        poses = self.poses[segment.name]
+        world_from_rig = torch.stack(
+            [poses[timestamp] for timestamp in timestamps]
+        ).repeat_interleave(len(self.cameras), dim=0)
 
         return {
             "images": images,
             "metadata": {"cam2rig": cam2rig},  # (n_frames * n_cameras, 4, 4)
+            "intrinsics": intrinsics,  # (n_frames * n_cameras, 4)
+            "world_from_rig": world_from_rig,  # (n_frames * n_cameras, 4, 4)
             "pointcloud": torch.empty(0, 3),
             "segment_id": segment.name,
             "timestamps": [int(t) for t in timestamps],
         }
 
-    def _load_cam2rig(self, segment: Path) -> torch.Tensor:
-        """Per-camera vehicle_from_camera SE(3), in self.cameras order.
+    def _load_calibration(self, segment: Path) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Per-camera (cam2rig, intrinsics) in self.cameras order.
 
         Waymo's rig frame is the vehicle frame, so the calibration component's
         extrinsic.transform is cam2rig directly - no composition needed.
+
+        Intrinsics are stored at native resolution and scaled here to self.image_size,
+        which assumes the transform pipeline is a plain resize to that size. A
+        transform that crops or pads would need its own adjustment.
         """
         calibration_file = segment / "calibration.json"
         if not calibration_file.exists():
@@ -138,10 +163,38 @@ class WaymoDataset(Dataset):
         if missing:
             raise ValueError(f"{calibration_file} has no calibration for {missing}")
 
-        return torch.tensor(
-            [calibration[camera]["cam2rig"] for camera in self.cameras],
-            dtype=torch.float32,
-        ).reshape(len(self.cameras), 4, 4)
+        height, width = self.image_size
+        cam2rig, intrinsics = [], []
+        for camera in self.cameras:
+            entry = calibration[camera]
+            scale_u = width / entry["width"]
+            scale_v = height / entry["height"]
+            cam2rig.append(entry["cam2rig"])
+            intrinsics.append([
+                entry["f_u"] * scale_u,
+                entry["f_v"] * scale_v,
+                entry["c_u"] * scale_u,
+                entry["c_v"] * scale_v,
+            ])
+
+        return (
+            torch.tensor(cam2rig, dtype=torch.float32).reshape(len(self.cameras), 4, 4),
+            torch.tensor(intrinsics, dtype=torch.float32),
+        )
+
+    def _load_poses(self, segment: Path) -> Dict[str, torch.Tensor]:
+        """world_from_rig SE(3) per frame timestamp."""
+        poses_file = segment / "poses.json"
+        if not poses_file.exists():
+            raise ValueError(
+                f"Poses not found: {poses_file}\n"
+                f"Re-run `python ops/parquet2jpeg.py` to export it alongside the images."
+            )
+
+        return {
+            timestamp: torch.tensor(transform, dtype=torch.float32).reshape(4, 4)
+            for timestamp, transform in json.loads(poses_file.read_text()).items()
+        }
 
     def get_sequence_ids(self) -> List[str]:
         """Returns the segment IDs actually indexed, in order, without duplicates."""
