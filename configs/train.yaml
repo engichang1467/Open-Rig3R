@@ -1,6 +1,6 @@
 # Dataset configuration
 dataset_type: "waymo"
-waymo_path: "/data/waymo_mini"  # JPEG tree produced by ops/parquet2jpeg.py
+waymo_path: "/data/waymo_mini"
 waymo_cameras: null  # null means the full 5-camera rig
 sequence_ids: null
 
