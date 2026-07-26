@@ -1,3 +1,4 @@
+import json
 import shutil
 import sys
 from pathlib import Path
@@ -22,10 +23,18 @@ TIMESTAMPS = [1550083470045260 + i for i in range(10)]
 TMP_PATH = Path("tmp_test_data")
 
 
+def mock_cam2rig(index):
+    """Distinct SE(3) per camera so tests can tell the rig apart from identity."""
+    transform = torch.eye(4)
+    transform[0, 3] = float(index)
+    return transform
+
+
 def create_mock_waymo_dataset(tmp_path):
     """
     Creates a minimal mock waymo JPEG tree for testing.
     Matches ops/parquet2jpeg.py output: root/split/segment/CAMERA/<timestamp>.jpeg
+    plus root/split/segment/calibration.json
     """
     for split in SPLITS:
         for sequence_id in SEQUENCE_IDS:
@@ -37,6 +46,17 @@ def create_mock_waymo_dataset(tmp_path):
                     Image.new("RGB", (32, 24), color=(10, 20, 30)).save(
                         camera_dir / f"{timestamp}.jpeg"
                     )
+
+            calibration = {
+                camera: {
+                    "cam2rig": mock_cam2rig(i).flatten().tolist(),
+                    "f_u": 2000.0, "f_v": 2000.0, "c_u": 960.0, "c_v": 640.0,
+                    "width": 1920, "height": 1280,
+                }
+                for i, camera in enumerate(CAMERAS)
+            }
+            path = tmp_path / split / sequence_id / "calibration.json"
+            path.write_text(json.dumps(calibration))
 
     return tmp_path
 
@@ -89,12 +109,54 @@ def test_dataset_getitem(mock_data):
     assert sample["images"].shape == (n_views, 3, 64, 64), (
         f"Expected images {(n_views, 3, 64, 64)}, got {tuple(sample['images'].shape)}"
     )
-    assert sample["metadata"]["cam2rig"].shape == (n_views * 3, 3), (
-        f"Expected cam2rig {(n_views * 3, 3)}, got {tuple(sample['metadata']['cam2rig'].shape)}"
+    assert sample["metadata"]["cam2rig"].shape == (n_views, 4, 4), (
+        f"Expected cam2rig {(n_views, 4, 4)}, got {tuple(sample['metadata']['cam2rig'].shape)}"
     )
     assert sample["segment_id"] in SEQUENCE_IDS, "Sample should report its segment"
     assert len(sample["timestamps"]) == 2, "Sample should carry one timestamp per frame"
     print("✓ test_dataset_getitem passed")
+
+
+@with_mock_dataset
+def test_cam2rig_is_real_calibration(mock_data):
+    """Guard against identity extrinsics: cam2rig must come from calibration.json"""
+    dataset = WaymoDataset(root_dir=mock_data, split="train", n_frames=2)
+    cam2rig = dataset[0]["metadata"]["cam2rig"]
+
+    expected = torch.stack([mock_cam2rig(i) for i in range(len(CAMERAS))])
+    assert torch.allclose(cam2rig[: len(CAMERAS)], expected), "cam2rig does not match calibration.json"
+    # rig is rigid: the same block repeats for every frame in the window
+    assert torch.allclose(cam2rig[len(CAMERAS) :], expected), "cam2rig should tile over frames"
+    assert not torch.allclose(cam2rig, torch.eye(4)), "cam2rig collapsed back to identity"
+    print("✓ test_cam2rig_is_real_calibration passed")
+
+
+@with_mock_dataset
+def test_cam2rig_follows_camera_order(mock_data):
+    """cam2rig rows must line up with the cameras the images were stacked in"""
+    cameras = ["SIDE_RIGHT", "FRONT"]
+    dataset = WaymoDataset(root_dir=mock_data, split="train", cameras=cameras, n_frames=1)
+    cam2rig = dataset[0]["metadata"]["cam2rig"]
+
+    expected = torch.stack([mock_cam2rig(CAMERAS.index(c)) for c in cameras])
+    assert torch.allclose(cam2rig, expected), f"cam2rig out of order: {cam2rig[:, 0, 3]}"
+    print("✓ test_cam2rig_follows_camera_order passed")
+
+
+@with_mock_dataset
+def test_dataset_missing_calibration(mock_data):
+    """A segment exported before calibration support fails loudly, not silently"""
+    for path in mock_data.glob("train/*/calibration.json"):
+        path.unlink()
+
+    error_raised = False
+    try:
+        WaymoDataset(root_dir=mock_data, split="train")
+    except ValueError as e:
+        error_raised = "Calibration not found" in str(e)
+
+    assert error_raised, "Should raise ValueError when calibration.json is missing"
+    print("✓ test_dataset_missing_calibration passed")
 
 
 @with_mock_dataset
@@ -198,6 +260,9 @@ def run_all_tests():
         test_dataset_initialization,
         test_dataset_splits,
         test_dataset_getitem,
+        test_cam2rig_is_real_calibration,
+        test_cam2rig_follows_camera_order,
+        test_dataset_missing_calibration,
         test_images_are_decoded_pixels,
         test_dataset_n_frames,
         test_dataset_camera_subset,

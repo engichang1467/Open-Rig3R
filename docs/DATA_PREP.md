@@ -40,8 +40,10 @@ make download-waymo-mini
 Training reads images, not parquet. `ops/parquet2jpeg.py` pulls the
 `[CameraImageComponent].image` column out of the `camera_image` parquet files and
 writes the JPEG bytes straight to disk — no decode/re-encode, the payload is
-already JPEG. The `make` targets above run it for you; run it directly to
-re-export, or to use a different location:
+already JPEG. It also writes one `calibration.json` per segment from the
+`camera_calibration` component, which is where the rig extrinsics come from. The
+`make` targets above run it for you; run it directly to re-export, or to use a
+different location:
 
 ```bash
 python ops/parquet2jpeg.py --src data/waymo_mini --dst /data/waymo_mini
@@ -58,10 +60,18 @@ Output layout:
 
 ```
 <dst>/<split>/<segment>/<CAMERA>/<frame_timestamp_micros>.jpeg
+<dst>/<split>/<segment>/calibration.json
 ```
 
 with `<CAMERA>` one of `FRONT`, `FRONT_LEFT`, `FRONT_RIGHT`, `SIDE_LEFT`, `SIDE_RIGHT`.
 Re-running overwrites existing files in place.
+
+`calibration.json` holds, per camera, the 4x4 `cam2rig` (Waymo's
+`extrinsic.transform`, a `vehicle_from_camera` — the rig frame *is* the vehicle
+frame) plus `f_u`/`f_v`/`c_u`/`c_v` and native `width`/`height`. Intrinsics are
+stored unscaled, so anything that resizes the images must scale them itself.
+`WaymoDataset` raises if this file is missing — a tree exported before calibration
+support needs a re-run.
 
 ### 5. Point the training config at it
 

@@ -75,7 +75,7 @@ class RigAwareTransformerDecoder(nn.Module):
 
         # --- Per-key projections ---
         self.key_projs = nn.ModuleDict({
-            "cam2rig": nn.Linear(3, embed_dim)  # 3 tokens, each 3D
+            "cam2rig": nn.Linear(16, embed_dim)  # one token per view, a flattened 4x4 SE(3)
         })
 
         # metadata projector: maps external metadata -> embed_dim tokens
@@ -112,7 +112,9 @@ class RigAwareTransformerDecoder(nn.Module):
             if value is None:
                 continue
             v = value.to(device)
-            if v.dim() == 2:
+            if v.dim() == 4:
+                v = v.flatten(2) # (B, V, 4, 4) -> (B, V, 16), one token per view
+            elif v.dim() == 2:
                 v = v.unsqueeze(1) # (B, D) -> (B, 1, D)
             elif v.dim() != 3:
                 raise ValueError(f"Unsupported metadata shape for key {key}: {v.shape}")

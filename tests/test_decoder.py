@@ -35,7 +35,7 @@ decoder = RigAwareTransformerDecoder(
 # meta = torch.randn(B, 2, 32)
 # dummy metadata: dictionary with cam2rig
 metadata = {
-    "cam2rig": torch.randn(B, 3, 3)  # random rotation matrices for test
+    "cam2rig": torch.eye(4).repeat(B, V, 1, 1)  # (B, V, 4, 4) per-view SE(3)
 }
 
 out = decoder(tokens, frames=V, metadata=metadata, cam2rig=metadata["cam2rig"])

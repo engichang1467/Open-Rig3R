@@ -1,9 +1,11 @@
-"""Extract Waymo camera_image parquet -> JPEG files.
+"""Extract Waymo camera_image parquet -> JPEG files, plus per-segment calibration.
 
 Layout: DST/<split>/<segment>/<camera>/<frame_timestamp_micros>.jpeg
+        DST/<split>/<segment>/calibration.json
 """
 
 import argparse
+import json
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -19,6 +21,47 @@ COLS = [
     "key.frame_timestamp_micros",
     "[CameraImageComponent].image",
 ]
+
+CALIB = "[CameraCalibrationComponent]"
+CALIB_COLS = [
+    "key.camera_name",
+    f"{CALIB}.extrinsic.transform",
+    f"{CALIB}.intrinsic.f_u",
+    f"{CALIB}.intrinsic.f_v",
+    f"{CALIB}.intrinsic.c_u",
+    f"{CALIB}.intrinsic.c_v",
+    f"{CALIB}.width",
+    f"{CALIB}.height",
+]
+
+
+def convert_calibration(src, dst, split):
+    """Write one calibration.json per segment: 5 rows, static for the whole segment.
+
+    extrinsic.transform is a 4x4 vehicle_from_camera, i.e. cam2rig as-is (the rig
+    frame is the vehicle frame). Intrinsics are stored at native resolution; a
+    consumer that resizes must scale f/c by its own (out / width, out / height).
+    """
+    files = sorted((src / split / "camera_calibration").glob("*.parquet"))
+
+    for path in tqdm(files, desc=f"{split} calibration"):
+        rows = pq.read_table(path, columns=CALIB_COLS).to_pylist()
+        calibration = {
+            CAMERAS.get(row["key.camera_name"], f"CAMERA_{row['key.camera_name']}"): {
+                "cam2rig": row[f"{CALIB}.extrinsic.transform"],  # row-major 4x4
+                "f_u": row[f"{CALIB}.intrinsic.f_u"],
+                "f_v": row[f"{CALIB}.intrinsic.f_v"],
+                "c_u": row[f"{CALIB}.intrinsic.c_u"],
+                "c_v": row[f"{CALIB}.intrinsic.c_v"],
+                "width": row[f"{CALIB}.width"],
+                "height": row[f"{CALIB}.height"],
+            }
+            for row in rows
+        }
+
+        out_dir = dst / split / path.stem
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "calibration.json").write_text(json.dumps(calibration, indent=2))
 
 
 def convert_split(src, dst, split):
@@ -52,3 +95,4 @@ if __name__ == "__main__":
     args = parse_args()
     for split in args.splits:
         convert_split(args.src, args.dst, split)
+        convert_calibration(args.src, args.dst, split)

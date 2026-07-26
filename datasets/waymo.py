@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -16,6 +17,7 @@ class WaymoDataset(Dataset):
 
     Expected layout:
         root_dir/<split>/<segment>/<CAMERA>/<frame_timestamp_micros>.jpeg
+        root_dir/<split>/<segment>/calibration.json
 
     One sample is a rig capture window: `n_frames` consecutive timestamps of one
     segment, each contributing one image per camera. Views per sample is
@@ -65,8 +67,13 @@ class WaymoDataset(Dataset):
 
         # index of (segment_dir, [timestamps]) sliding windows
         self.samples: List[Tuple[Path, List[str]]] = []
+        # segment name -> (n_cameras, 4, 4), static for the whole segment
+        self.cam2rig: Dict[str, torch.Tensor] = {}
         for segment in segments:
             timestamps = self._shared_timestamps(segment)
+            if not timestamps:
+                continue
+            self.cam2rig[segment.name] = self._load_cam2rig(segment)
             for i in range(len(timestamps) - n_frames + 1):
                 self.samples.append((segment, timestamps[i : i + n_frames]))
 
@@ -101,19 +108,40 @@ class WaymoDataset(Dataset):
 
         images = torch.stack(images)  # (n_frames * n_cameras, 3, H, W)
 
+        # the rig is rigid, so one block of per-camera extrinsics tiles over frames,
+        # matching the (timestamp, camera) order the images were stacked in
+        cam2rig = self.cam2rig[segment.name].repeat(len(timestamps), 1, 1)
+
         return {
             "images": images,
-            "metadata": {"cam2rig": self._cam2rig(images.shape[0])},
+            "metadata": {"cam2rig": cam2rig},  # (n_frames * n_cameras, 4, 4)
             "pointcloud": torch.empty(0, 3),
             "segment_id": segment.name,
             "timestamps": [int(t) for t in timestamps],
         }
 
-    def _cam2rig(self, n_views: int) -> torch.Tensor:
-        # ponytail: identity extrinsics - the JPEG export carries no calibration.
-        # Real values live in the camera_calibration parquet component; export
-        # them alongside the images and read them here when rig geometry matters.
-        return torch.eye(3).repeat(n_views, 1)  # (n_views * 3, 3)
+    def _load_cam2rig(self, segment: Path) -> torch.Tensor:
+        """Per-camera vehicle_from_camera SE(3), in self.cameras order.
+
+        Waymo's rig frame is the vehicle frame, so the calibration component's
+        extrinsic.transform is cam2rig directly - no composition needed.
+        """
+        calibration_file = segment / "calibration.json"
+        if not calibration_file.exists():
+            raise ValueError(
+                f"Calibration not found: {calibration_file}\n"
+                f"Re-run `python ops/parquet2jpeg.py` to export it alongside the images."
+            )
+
+        calibration = json.loads(calibration_file.read_text())
+        missing = [camera for camera in self.cameras if camera not in calibration]
+        if missing:
+            raise ValueError(f"{calibration_file} has no calibration for {missing}")
+
+        return torch.tensor(
+            [calibration[camera]["cam2rig"] for camera in self.cameras],
+            dtype=torch.float32,
+        ).reshape(len(self.cameras), 4, 4)
 
     def get_sequence_ids(self) -> List[str]:
         """Returns the segment IDs actually indexed, in order, without duplicates."""
