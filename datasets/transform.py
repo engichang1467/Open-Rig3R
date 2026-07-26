@@ -1,9 +1,11 @@
 from torchvision import transforms
 
 def get_train_transforms(image_size=(224, 224)):
+    # No geometric augmentation here on purpose: pointmap and raymap targets are
+    # built from calibration, so a flip or crop that the targets don't see makes
+    # the supervision wrong rather than noisy. Photometric augmentation is safe.
     return transforms.Compose([
         transforms.Resize(image_size),
-        transforms.RandomHorizontalFlip(),
         transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],

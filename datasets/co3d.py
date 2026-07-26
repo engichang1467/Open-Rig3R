@@ -119,8 +119,8 @@ class Co3DDataset(Dataset):
                 if f in frame_annots:
                     cam2rigs.append(torch.tensor(frame_annots[f]['cam2rig'], dtype=torch.float32))
                 else:
-                    cam2rigs.append(torch.eye(3))
-            metadata['cam2rig'] = torch.stack(cam2rigs)
+                    cam2rigs.append(torch.eye(4))
+            metadata['cam2rig'] = torch.stack(cam2rigs)  # (V, 4, 4)
         return metadata
     
     def _maybe_drop_metadata(self, metadata):
@@ -131,7 +131,7 @@ class Co3DDataset(Dataset):
                     # metadata[key] = None
                     # Replace with placeholder
                     if key == 'cam2rig':
-                        metadata[key] = torch.eye(3).unsqueeze(0).repeat(self.n_frames, 1, 1)
+                        metadata[key] = torch.eye(4).unsqueeze(0).repeat(self.n_frames, 1, 1)
                     elif key == 'camera_id':
                         metadata[key] = torch.full((self.n_frames,), -1, dtype=torch.long)
                     elif key == 'timestamp':

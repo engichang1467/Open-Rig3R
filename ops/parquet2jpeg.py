@@ -1,9 +1,12 @@
-"""Extract Waymo camera_image parquet -> JPEG files.
+"""Extract Waymo camera_image parquet -> JPEG files, plus per-segment geometry.
 
 Layout: DST/<split>/<segment>/<camera>/<frame_timestamp_micros>.jpeg
+        DST/<split>/<segment>/calibration.json
+        DST/<split>/<segment>/poses.json
 """
 
 import argparse
+import json
 from pathlib import Path
 
 import pyarrow.parquet as pq
@@ -19,6 +22,81 @@ COLS = [
     "key.frame_timestamp_micros",
     "[CameraImageComponent].image",
 ]
+
+CALIB = "[CameraCalibrationComponent]"
+CALIB_COLS = [
+    "key.camera_name",
+    f"{CALIB}.extrinsic.transform",
+    f"{CALIB}.intrinsic.f_u",
+    f"{CALIB}.intrinsic.f_v",
+    f"{CALIB}.intrinsic.c_u",
+    f"{CALIB}.intrinsic.c_v",
+    f"{CALIB}.width",
+    f"{CALIB}.height",
+]
+
+POSE_COLS = [
+    "key.frame_timestamp_micros",
+    "key.camera_name",
+    "[CameraImageComponent].pose.transform",
+]
+
+
+def convert_calibration(src, dst, split):
+    """Write one calibration.json per segment: 5 rows, static for the whole segment.
+
+    extrinsic.transform is a 4x4 vehicle_from_camera, i.e. cam2rig as-is (the rig
+    frame is the vehicle frame). Intrinsics are stored at native resolution; a
+    consumer that resizes must scale f/c by its own (out / width, out / height).
+    """
+    files = sorted((src / split / "camera_calibration").glob("*.parquet"))
+
+    for path in tqdm(files, desc=f"{split} calibration"):
+        rows = pq.read_table(path, columns=CALIB_COLS).to_pylist()
+        calibration = {
+            CAMERAS.get(row["key.camera_name"], f"CAMERA_{row['key.camera_name']}"): {
+                "cam2rig": row[f"{CALIB}.extrinsic.transform"],  # row-major 4x4
+                "f_u": row[f"{CALIB}.intrinsic.f_u"],
+                "f_v": row[f"{CALIB}.intrinsic.f_v"],
+                "c_u": row[f"{CALIB}.intrinsic.c_u"],
+                "c_v": row[f"{CALIB}.intrinsic.c_v"],
+                "width": row[f"{CALIB}.width"],
+                "height": row[f"{CALIB}.height"],
+            }
+            for row in rows
+        }
+
+        out_dir = dst / split / path.stem
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "calibration.json").write_text(json.dumps(calibration, indent=2))
+
+
+def convert_poses(src, dst, split):
+    """Write one poses.json per segment: {timestamp: {camera: world_from_vehicle 4x4}}.
+
+    This is what makes rays from different frames comparable, so pose supervision
+    is not just the static rig repeated.
+
+    It is keyed per camera, not per frame, because the five cameras are triggered
+    at different instants within a frame - `vehicle_pose` holds one pose for the
+    whole frame, which leaves points tens of pixels off their own camera's rays
+    while the rig is moving. Reading the pose column skips the image bytes.
+    """
+    files = sorted((src / split / "camera_image").glob("*.parquet"))
+
+    for path in tqdm(files, desc=f"{split} poses"):
+        rows = pq.read_table(path, columns=POSE_COLS).to_pylist()
+        poses = {}
+        for row in rows:
+            timestamp = str(row["key.frame_timestamp_micros"])
+            camera = CAMERAS.get(row["key.camera_name"], f"CAMERA_{row['key.camera_name']}")
+            poses.setdefault(timestamp, {})[camera] = row[
+                "[CameraImageComponent].pose.transform"
+            ]
+
+        out_dir = dst / split / path.stem
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "poses.json").write_text(json.dumps(poses))
 
 
 def convert_split(src, dst, split):
@@ -52,3 +130,5 @@ if __name__ == "__main__":
     args = parse_args()
     for split in args.splits:
         convert_split(args.src, args.dst, split)
+        convert_calibration(args.src, args.dst, split)
+        convert_poses(args.src, args.dst, split)

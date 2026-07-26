@@ -22,8 +22,7 @@ def test_rig3r_forward():
 
     # Optional dummy metadata
     metadata = {
-        "cam2rig": torch.eye(3).unsqueeze(0).repeat(B, 1, 1)  # (B, 3, 3)
-        # "cam2rig": torch.eye(3).unsqueeze(0).repeat(B, 3)  # (B, 3, 3)
+        "cam2rig": torch.eye(4).repeat(B, N, 1, 1)  # (B, V, 4, 4) per-view SE(3)
     }
 
     # Initialize model
