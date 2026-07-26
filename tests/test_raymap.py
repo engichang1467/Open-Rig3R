@@ -7,7 +7,13 @@ import torch
 root_path = Path(__file__).parent.parent
 sys.path.append(str(root_path))
 
-from utils.raymap import build_raymap_targets, camera_ray_directions, patch_centers
+from utils.raymap import (
+    build_pointmap_target,
+    build_raymap_targets,
+    camera_ray_directions,
+    patch_centers,
+    reference_from_camera,
+)
 
 
 IMAGE_SIZE = (128, 128)
@@ -146,6 +152,92 @@ def test_pose_raymap_sees_rig_rotation():
     print("✓ test_pose_raymap_sees_rig_rotation passed")
 
 
+def test_pointmap_pools_to_patch_grid():
+    """Export grid is coarser than the model's patch grid, so it must pool down"""
+    cam2rig, _, world_from_rig = identity_batch(n_views=1)
+    export_grid = GRID * 2
+    pointmap = torch.full((1, 1, export_grid, export_grid, 3), 3.0)
+
+    points, confidence = build_pointmap_target(
+        pointmap, cam2rig, world_from_rig, PATCH_SIZE, IMAGE_SIZE
+    )
+
+    assert points.shape == (1, 1, P, 3), f"Got {tuple(points.shape)}"
+    assert confidence.shape == (1, 1, P), f"Got {tuple(confidence.shape)}"
+    assert torch.allclose(points, torch.full((1, 1, P, 3), 3.0)), "Pooling changed the values"
+    assert torch.allclose(confidence, torch.ones(1, 1, P)), "Fully covered patches should be 1"
+    print("✓ test_pointmap_pools_to_patch_grid passed")
+
+
+def test_pointmap_confidence_tracks_coverage():
+    """Empty cells must not be averaged in as zeros, or every target drifts toward 0"""
+    cam2rig, _, world_from_rig = identity_batch(n_views=1)
+    export_grid = GRID * 2
+    pointmap = torch.full((1, 1, export_grid, export_grid, 3), torch.nan)
+    # fill one cell of each 2x2 block with a real return
+    pointmap[:, :, ::2, ::2] = 4.0
+    # and leave one whole patch completely empty
+    pointmap[:, :, 0:2, 0:2] = torch.nan
+
+    points, confidence = build_pointmap_target(
+        pointmap, cam2rig, world_from_rig, PATCH_SIZE, IMAGE_SIZE
+    )
+
+    assert confidence[0, 0, 0] == 0.0, "The empty patch should have zero confidence"
+    assert torch.allclose(points[0, 0, 0], torch.zeros(3)), "Empty patches should be zeroed"
+    assert torch.allclose(confidence[0, 0, 1], torch.tensor(0.25)), (
+        f"One of four cells covered should be 0.25, got {confidence[0, 0, 1]}"
+    )
+    assert torch.allclose(points[0, 0, 1], torch.full((3,), 4.0)), (
+        f"Covered cell should survive averaging, got {points[0, 0, 1]}"
+    )
+    print("✓ test_pointmap_confidence_tracks_coverage passed")
+
+
+def test_pointmap_moves_into_reference_frame():
+    """Points arrive in each camera's own frame and must land in view 0's"""
+    cam2rig, _, world_from_rig = identity_batch(n_views=2)
+    world_from_rig[0, 1, :3, 3] = torch.tensor([4.0, 0.0, 0.0])  # view 1 is 4 m ahead
+
+    pointmap = torch.full((1, 2, GRID, GRID, 3), 0.0)
+    pointmap[..., 0] = 10.0  # both views see something 10 m down their own +x
+
+    points, _ = build_pointmap_target(
+        pointmap, cam2rig, world_from_rig, PATCH_SIZE, IMAGE_SIZE
+    )
+
+    assert torch.allclose(points[0, 0, :, 0], torch.full((P,), 10.0)), "View 0 is the reference"
+    assert torch.allclose(points[0, 1, :, 0], torch.full((P,), 14.0)), (
+        f"View 1's point should be 14 m out in view 0's frame, got {points[0, 1, 0]}"
+    )
+    print("✓ test_pointmap_moves_into_reference_frame passed")
+
+
+def test_pointmap_lies_along_its_own_rays():
+    """The end-to-end invariant: a target point sits on the ray of its own patch"""
+    cam2rig, intrinsics, world_from_rig = identity_batch(n_views=2)
+    cam2rig[0, 1, :3, 3] = torch.tensor([0.0, 1.0, 0.0])  # view 1 mounted a metre left
+    world_from_rig[0, 1, :3, 3] = torch.tensor([2.0, 0.0, 0.0])
+
+    # place a point 12 m along each patch's own camera ray
+    directions = camera_ray_directions(intrinsics, IMAGE_SIZE, PATCH_SIZE)
+    pointmap = (directions * 12.0).reshape(1, 2, GRID, GRID, 3)
+
+    points, _ = build_pointmap_target(
+        pointmap, cam2rig, world_from_rig, PATCH_SIZE, IMAGE_SIZE
+    )
+    targets = build_raymap_targets(cam2rig, intrinsics, world_from_rig, IMAGE_SIZE, PATCH_SIZE)
+
+    centers = reference_from_camera(cam2rig, world_from_rig)[..., :3, 3]
+    for view in range(2):
+        offset = points[0, view] - centers[0, view]
+        cosine = torch.nn.functional.cosine_similarity(
+            offset, targets["pose_raymap"][0, view], dim=-1
+        )
+        assert cosine.min() > 0.9999, f"View {view} points drift off their rays: {cosine.min()}"
+    print("✓ test_pointmap_lies_along_its_own_rays passed")
+
+
 def run_all_tests():
     tests = [
         test_patch_centers_are_row_major,
@@ -155,6 +247,10 @@ def run_all_tests():
         test_rig_rotation_is_applied,
         test_pose_raymap_is_relative_to_first_view,
         test_pose_raymap_sees_rig_rotation,
+        test_pointmap_pools_to_patch_grid,
+        test_pointmap_confidence_tracks_coverage,
+        test_pointmap_moves_into_reference_frame,
+        test_pointmap_lies_along_its_own_rays,
     ]
 
     passed = 0

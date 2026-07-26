@@ -7,10 +7,12 @@ setup-train:
 download-waymo-full:
 	sh ops/get_waymo_data_full.sh
 	python ops/parquet2jpeg.py --src /data/waymo --dst /data/waymo
+	python ops/parquet2pointmap.py --src /data/waymo --dst /data/waymo
 
 download-waymo-mini:
 	sh ops/get_waymo_data_mini.sh
 	python ops/parquet2jpeg.py --src /data/waymo_mini --dst /data/waymo_mini
+	python ops/parquet2pointmap.py --src /data/waymo_mini --dst /data/waymo_mini
 
 download-wayve101:
 	mkdir -p data/wayve_scenes_101
