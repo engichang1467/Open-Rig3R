@@ -62,6 +62,8 @@ Output layout:
 <dst>/<split>/<segment>/<CAMERA>/<frame_timestamp_micros>.jpeg
 <dst>/<split>/<segment>/calibration.json
 <dst>/<split>/<segment>/poses.json
+<dst>/<split>/<segment>/pointmap/<CAMERA>.npy      # from parquet2pointmap.py
+<dst>/<split>/<segment>/pointmap/timestamps.json
 ```
 
 with `<CAMERA>` one of `FRONT`, `FRONT_LEFT`, `FRONT_RIGHT`, `SIDE_LEFT`, `SIDE_RIGHT`.
@@ -72,19 +74,53 @@ Re-running overwrites existing files in place.
 frame) plus `f_u`/`f_v`/`c_u`/`c_v` and native `width`/`height`. Intrinsics are
 stored unscaled; `WaymoDataset` rescales them to `image_size` on load.
 
-`poses.json` maps each frame timestamp to a 4x4 `world_from_vehicle`. Without it
-every frame's rays would be identical and pose supervision would be degenerate,
-so the loader skips timestamps that have no pose.
+`poses.json` maps each frame timestamp to a 4x4 `world_from_vehicle` **per camera**,
+taken at that camera's own trigger instant rather than once per frame. The five
+cameras do not fire together, so a single per-frame pose leaves points tens of
+pixels off their own camera's rays whenever the rig is moving.
 
 Both files are required: `WaymoDataset` raises if either is missing, and a tree
 exported before they existed needs a re-run.
 
 Together they are what supervises training — `utils/raymap.py` turns calibration
 plus poses into the `rig_raymap` and `pose_raymap` targets that `MultiTaskLoss`
-scores. Pointmap supervision still needs the `lidar` component and is skipped for
-now, so only two of the three loss terms are active on Waymo.
+scores.
 
-### 5. Point the training config at it
+### 5. The lidar pointmaps
+
+`ops/parquet2pointmap.py` adds the third loss term, projecting the TOP lidar into
+each camera to get sparse depth. The `make` targets run it; run it directly to
+re-export:
+
+```bash
+python ops/parquet2pointmap.py --src data/waymo_mini --dst /data/waymo_mini
+python ops/parquet2pointmap.py --src data/waymo_mini --verify
+```
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--src` | `data/waymo_mini` | Root of the downloaded parquet dataset |
+| `--dst` | `/data/waymo_mini` | Where to write the pointmaps |
+| `--splits` | `train validation` | Splits to convert |
+| `--grid` | `64` | Cells per side, pooled to the patch grid at load |
+| `--verify` | off | Reproject against Waymo's own projections instead of writing |
+
+Each `<CAMERA>.npy` is `(n_frames, grid, grid, 3)` float16 holding points in that
+camera's own frame, `NaN` where no return landed, about 24 MB per segment. The
+loader pools the grid down to the model's patch grid and turns coverage into
+`pointmap_conf`, so empty patches contribute nothing to the loss.
+
+Unlike the other two files this one is **optional** — without it training still
+runs on raymap supervision alone.
+
+`--verify` is the check on the range-image math: it reprojects the computed points
+through the camera intrinsics and compares against the `lidar_camera_projection`
+component. Expect a median around 2 px at native 1920x1280 resolution. The residual
+is per-row rolling shutter, which needs the `velocity` and `rolling_shutter_params`
+fields to model; at 128x128 training resolution even the worst observed segment
+stays under half a patch, so it is left uncorrected.
+
+### 6. Point the training config at it
 
 `waymo_path` in [`configs/train_waymo.yaml`](../configs/train_waymo.yaml) must match
 your `--dst`:

@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 import traceback
 
+import numpy
 import torch
 from PIL import Image
 
@@ -37,6 +38,18 @@ def mock_world_from_rig(index):
     return transform
 
 
+POINTMAP_GRID = 8
+
+
+def mock_pointmap():
+    """(n_timestamps, G, G, 3) with the bottom half empty, as lidar tends to be."""
+    grid = numpy.full(
+        (len(TIMESTAMPS), POINTMAP_GRID, POINTMAP_GRID, 3), numpy.nan, dtype=numpy.float16
+    )
+    grid[:, : POINTMAP_GRID // 2] = 5.0
+    return grid
+
+
 def create_mock_waymo_dataset(tmp_path):
     """
     Creates a minimal mock waymo JPEG tree for testing.
@@ -66,10 +79,20 @@ def create_mock_waymo_dataset(tmp_path):
             (segment_dir / "calibration.json").write_text(json.dumps(calibration))
 
             poses = {
-                str(timestamp): mock_world_from_rig(i).flatten().tolist()
+                str(timestamp): {
+                    camera: mock_world_from_rig(i).flatten().tolist() for camera in CAMERAS
+                }
                 for i, timestamp in enumerate(TIMESTAMPS)
             }
             (segment_dir / "poses.json").write_text(json.dumps(poses))
+
+            pointmap_dir = segment_dir / "pointmap"
+            pointmap_dir.mkdir(exist_ok=True)
+            for camera in CAMERAS:
+                numpy.save(pointmap_dir / f"{camera}.npy", mock_pointmap())
+            (pointmap_dir / "timestamps.json").write_text(
+                json.dumps([str(timestamp) for timestamp in TIMESTAMPS])
+            )
 
     return tmp_path
 
@@ -183,6 +206,35 @@ def test_world_from_rig_is_per_frame(mock_data):
     displacement = world_from_rig[n_cameras, 0, 3] - world_from_rig[0, 0, 3]
     assert displacement != 0, "Rig pose should differ between frames, or pose targets are static"
     print("✓ test_world_from_rig_is_per_frame passed")
+
+
+@with_mock_dataset
+def test_pointmap_is_loaded_per_view(mock_data):
+    """Lidar pointmaps line up one-per-view and keep their empty cells as NaN"""
+    dataset = WaymoDataset(root_dir=mock_data, split="train", n_frames=2)
+    pointmap = dataset[0]["pointmap"]
+
+    n_views = 2 * len(CAMERAS)
+    assert pointmap.shape == (n_views, POINTMAP_GRID, POINTMAP_GRID, 3), (
+        f"Got {tuple(pointmap.shape)}"
+    )
+    assert torch.isnan(pointmap[:, POINTMAP_GRID // 2 :]).all(), "Empty cells should stay NaN"
+    assert not torch.isnan(pointmap[:, : POINTMAP_GRID // 2]).any(), "Filled cells lost"
+    print("✓ test_pointmap_is_loaded_per_view passed")
+
+
+@with_mock_dataset
+def test_pointmap_is_optional(mock_data):
+    """A tree exported before lidar support still loads, just without pointmaps"""
+    for path in mock_data.glob("train/*/pointmap"):
+        shutil.rmtree(path)
+
+    dataset = WaymoDataset(root_dir=mock_data, split="train", n_frames=2)
+    sample = dataset[0]
+
+    assert sample["pointmap"].numel() == 0, "Missing pointmaps should give an empty tensor"
+    assert sample["images"].shape[0] == 2 * len(CAMERAS), "Images should still load"
+    print("✓ test_pointmap_is_optional passed")
 
 
 @with_mock_dataset
@@ -322,6 +374,8 @@ def run_all_tests():
         test_cam2rig_follows_camera_order,
         test_intrinsics_scaled_to_image_size,
         test_world_from_rig_is_per_frame,
+        test_pointmap_is_loaded_per_view,
+        test_pointmap_is_optional,
         test_dataset_missing_poses,
         test_dataset_missing_calibration,
         test_images_are_decoded_pixels,

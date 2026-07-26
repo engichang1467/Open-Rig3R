@@ -22,7 +22,7 @@ from datasets.transform import get_train_transforms, get_val_transforms
 # --- Import model ---
 from models.rig3r import Rig3R
 from models.losses import MultiTaskLoss
-from utils.raymap import build_raymap_targets
+from utils.raymap import build_pointmap_target, build_raymap_targets
 
 # --- Optional: logging ---
 import wandb
@@ -148,7 +148,14 @@ scheduler = CosineAnnealingLR(optimizer,
 # -----------------------------
 # 5. Loss function
 # -----------------------------
-criterion = MultiTaskLoss()
+# the pointmap term is a metric MSE in metres and runs an order of magnitude above
+# the two raymap terms, which are cosine-based and bounded by 2 - hence the weights
+loss_cfg = train_cfg.get("loss", {})
+criterion = MultiTaskLoss(
+    w_point=loss_cfg.get("w_point", 1.0),
+    w_pose=loss_cfg.get("w_pose", 1.0),
+    w_rig=loss_cfg.get("w_rig", 1.0),
+)
 
 
 def downsample_pointmap(pointmap, img_size, patch_size):
@@ -181,9 +188,20 @@ def compute_loss(outputs, batch, device, img_size, patch_size):
     targets = {}
 
     pointcloud = batch["pointcloud"].to(device)
+    pointmap = batch.get("pointmap", torch.empty(0)).to(device)
+
     if pointcloud.numel() > 0:
         preds["pointmap"] = downsample_pointmap(preds["pointmap"], img_size[0], patch_size)
         targets["pointmap"] = pointcloud
+    elif pointmap.numel() > 0:
+        preds["pointmap"] = downsample_pointmap(preds["pointmap"], img_size[0], patch_size)
+        targets["pointmap"], targets["pointmap_conf"] = build_pointmap_target(
+            pointmap=pointmap,
+            cam2rig=batch["metadata"]["cam2rig"].to(device),
+            world_from_rig=batch["world_from_rig"].to(device),
+            patch_size=patch_size,
+            image_size=img_size,
+        )
 
     if "intrinsics" in batch:
         targets.update(build_raymap_targets(

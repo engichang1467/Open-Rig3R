@@ -37,7 +37,8 @@ CALIB_COLS = [
 
 POSE_COLS = [
     "key.frame_timestamp_micros",
-    "[VehiclePoseComponent].world_from_vehicle.transform",
+    "key.camera_name",
+    "[CameraImageComponent].pose.transform",
 ]
 
 
@@ -71,21 +72,27 @@ def convert_calibration(src, dst, split):
 
 
 def convert_poses(src, dst, split):
-    """Write one poses.json per segment: world_from_vehicle 4x4 per frame timestamp.
+    """Write one poses.json per segment: {timestamp: {camera: world_from_vehicle 4x4}}.
 
     This is what makes rays from different frames comparable, so pose supervision
     is not just the static rig repeated.
+
+    It is keyed per camera, not per frame, because the five cameras are triggered
+    at different instants within a frame - `vehicle_pose` holds one pose for the
+    whole frame, which leaves points tens of pixels off their own camera's rays
+    while the rig is moving. Reading the pose column skips the image bytes.
     """
-    files = sorted((src / split / "vehicle_pose").glob("*.parquet"))
+    files = sorted((src / split / "camera_image").glob("*.parquet"))
 
     for path in tqdm(files, desc=f"{split} poses"):
         rows = pq.read_table(path, columns=POSE_COLS).to_pylist()
-        poses = {
-            str(row["key.frame_timestamp_micros"]): row[
-                "[VehiclePoseComponent].world_from_vehicle.transform"
+        poses = {}
+        for row in rows:
+            timestamp = str(row["key.frame_timestamp_micros"])
+            camera = CAMERAS.get(row["key.camera_name"], f"CAMERA_{row['key.camera_name']}")
+            poses.setdefault(timestamp, {})[camera] = row[
+                "[CameraImageComponent].pose.transform"
             ]
-            for row in rows
-        }
 
         out_dir = dst / split / path.stem
         out_dir.mkdir(parents=True, exist_ok=True)

@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
+import numpy
 import torch
 from PIL import Image
 from torch.utils.data import Dataset
@@ -71,14 +72,22 @@ class WaymoDataset(Dataset):
         # segment name -> per-camera geometry, static for the whole segment
         self.cam2rig: Dict[str, torch.Tensor] = {}  # (n_cameras, 4, 4)
         self.intrinsics: Dict[str, torch.Tensor] = {}  # (n_cameras, 4)
-        # segment name -> {timestamp: world_from_rig (4, 4)}
-        self.poses: Dict[str, Dict[str, torch.Tensor]] = {}
+        # segment name -> {timestamp: {camera: world_from_rig (4, 4)}}
+        self.poses: Dict[str, Dict[str, Dict[str, torch.Tensor]]] = {}
+        # segment name -> ({timestamp: row}, {camera: memmapped (n_frames, G, G, 3)})
+        self.pointmaps: Dict[str, Tuple[Dict[str, int], Dict[str, numpy.ndarray]]] = {}
         for segment in segments:
             timestamps = self._shared_timestamps(segment)
             if not timestamps:
                 continue  # incomplete rig
             poses = self._load_poses(segment)
             timestamps = [t for t in timestamps if t in poses]
+
+            pointmaps = self._load_pointmaps(segment)
+            if pointmaps is not None:
+                self.pointmaps[segment.name] = pointmaps
+                timestamps = [t for t in timestamps if t in pointmaps[0]]
+
             if not timestamps:
                 continue
             self.cam2rig[segment.name], self.intrinsics[segment.name] = (
@@ -125,17 +134,20 @@ class WaymoDataset(Dataset):
         cam2rig = self.cam2rig[segment.name].repeat(n_frames, 1, 1)
         intrinsics = self.intrinsics[segment.name].repeat(n_frames, 1)
 
-        # the rig moves, so world_from_rig is per timestamp, held across the cameras
+        # the rig moves and each camera fires at its own instant, so this is per view
         poses = self.poses[segment.name]
-        world_from_rig = torch.stack(
-            [poses[timestamp] for timestamp in timestamps]
-        ).repeat_interleave(len(self.cameras), dim=0)
+        world_from_rig = torch.stack([
+            poses[timestamp][camera]
+            for timestamp in timestamps
+            for camera in self.cameras
+        ])
 
         return {
             "images": images,
             "metadata": {"cam2rig": cam2rig},  # (n_frames * n_cameras, 4, 4)
             "intrinsics": intrinsics,  # (n_frames * n_cameras, 4)
             "world_from_rig": world_from_rig,  # (n_frames * n_cameras, 4, 4)
+            "pointmap": self._pointmap(segment, timestamps),
             "pointcloud": torch.empty(0, 3),
             "segment_id": segment.name,
             "timestamps": [int(t) for t in timestamps],
@@ -182,8 +194,8 @@ class WaymoDataset(Dataset):
             torch.tensor(intrinsics, dtype=torch.float32),
         )
 
-    def _load_poses(self, segment: Path) -> Dict[str, torch.Tensor]:
-        """world_from_rig SE(3) per frame timestamp."""
+    def _load_poses(self, segment: Path) -> Dict[str, Dict[str, torch.Tensor]]:
+        """world_from_rig SE(3) per frame timestamp, per camera capture instant."""
         poses_file = segment / "poses.json"
         if not poses_file.exists():
             raise ValueError(
@@ -191,10 +203,52 @@ class WaymoDataset(Dataset):
                 f"Re-run `python ops/parquet2jpeg.py` to export it alongside the images."
             )
 
+        poses = json.loads(poses_file.read_text())
         return {
-            timestamp: torch.tensor(transform, dtype=torch.float32).reshape(4, 4)
-            for timestamp, transform in json.loads(poses_file.read_text()).items()
+            timestamp: {
+                camera: torch.tensor(transform, dtype=torch.float32).reshape(4, 4)
+                for camera, transform in cameras.items()
+            }
+            for timestamp, cameras in poses.items()
+            if all(camera in cameras for camera in self.cameras)
         }
+
+    def _load_pointmaps(self, segment: Path):
+        """({timestamp: row}, {camera: memmapped array}), or None if not exported.
+
+        Optional on purpose: without it training still runs on raymap supervision
+        alone, which is what every tree exported before ops/parquet2pointmap.py has.
+        """
+        directory = segment / "pointmap"
+        if not directory.is_dir():
+            return None
+
+        timestamps = json.loads((directory / "timestamps.json").read_text())
+        arrays = {
+            camera: numpy.load(directory / f"{camera}.npy", mmap_mode="r")
+            for camera in self.cameras
+        }
+        return {timestamp: row for row, timestamp in enumerate(timestamps)}, arrays
+
+    def _pointmap(self, segment: Path, timestamps: List[str]) -> torch.Tensor:
+        """Sparse lidar pointmap per view, in that view's own camera frame.
+
+        (n_frames * n_cameras, grid, grid, 3), NaN where no lidar return landed.
+        Empty (0, 0, 0, 3) when the segment has no pointmap export, so training
+        falls back to raymap-only supervision instead of failing.
+        """
+        grids = self.pointmaps.get(segment.name)
+        if grids is None:
+            return torch.empty(0, 0, 0, 3)
+
+        rows, arrays = grids
+        return torch.from_numpy(
+            numpy.stack([
+                arrays[camera][rows[timestamp]]
+                for timestamp in timestamps
+                for camera in self.cameras
+            ])
+        ).float()
 
     def get_sequence_ids(self) -> List[str]:
         """Returns the segment IDs actually indexed, in order, without duplicates."""
