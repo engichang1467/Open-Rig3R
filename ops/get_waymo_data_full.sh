@@ -15,7 +15,7 @@ download_dataset() {
     local_dir=$2
     
     echo "--------------------------------------------------------"
-    echo "Starting FULL download for: $gcs_split -> data/waymo_mini/$local_dir/"
+    echo "Starting FULL download for: $gcs_split -> /data/waymo/$local_dir/"
     echo "--------------------------------------------------------"
 
     counter=0
@@ -23,12 +23,12 @@ download_dataset() {
     for subfolder in $subfolders; do
       (
         # Create directory
-        mkdir -p "data/waymo/$local_dir/$subfolder/"
+        mkdir -p "/data/waymo/$local_dir/$subfolder/"
         
         # Run gsutil to download ALL parquet files in this subfolder
         # Note: This downloads the entire dataset for this split/subfolder combination
         echo "[$gcs_split] Downloading all files for: $subfolder..."
-        gsutil -m cp "gs://waymo_open_dataset_v_2_0_1/$gcs_split/$subfolder/*.parquet" "data/waymo_mini/$local_dir/$subfolder/" > /dev/null 2>&1
+        gsutil -m cp "gs://waymo_open_dataset_v_2_0_1/$gcs_split/$subfolder/*.parquet" "/data/waymo/$local_dir/$subfolder/" > /dev/null 2>&1
         
         echo "[$gcs_split] Completed: $subfolder"
       ) &

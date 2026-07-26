@@ -22,7 +22,7 @@ download_dataset() {
     file_ids=$3
     
     echo "--------------------------------------------------------"
-    echo "Starting download for: $gcs_split -> data/waymo_mini/$local_dir/"
+    echo "Starting download for: $gcs_split -> /data/waymo_mini/$local_dir/"
     echo "--------------------------------------------------------"
 
     counter=0
@@ -30,7 +30,7 @@ download_dataset() {
     for subfolder in $subfolders; do
       (
         # Create directory
-        mkdir -p "data/waymo_mini/$local_dir/$subfolder/"
+        mkdir -p "/data/waymo_mini/$local_dir/$subfolder/"
         
         # Build path list
         gcs_paths=""
@@ -39,7 +39,7 @@ download_dataset() {
         done
         
         # Run gsutil (output silenced)
-        gsutil -m cp $gcs_paths "data/waymo_mini/$local_dir/$subfolder/" > /dev/null 2>&1
+        gsutil -m cp $gcs_paths "/data/waymo_mini/$local_dir/$subfolder/" > /dev/null 2>&1
         
         echo "[$gcs_split] Completed: $subfolder"
       ) &
