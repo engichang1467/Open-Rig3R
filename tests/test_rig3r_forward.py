@@ -74,5 +74,55 @@ def test_rig3r_forward():
     assert outputs["pointmap_conf"].shape[-1] == 1  # confidence is 1D
     print("Forward pass test passed!")
 
+def test_view_fold_matches_per_view_loop():
+   """Folding views into the batch dim must be a pure speedup, not a change in math.
+
+
+   Guards models/rig3r.py: the encoder runs on B*N images at once instead of N
+   calls of B images, so token order after the reshape has to match what looping
+   and concatenating used to produce.
+   """
+   B, N, H = 2, 3, 64
+   torch.manual_seed(0)
+   images = torch.randn(B, N, 3, H, H)
+   metadata = {"cam2rig": torch.eye(4).repeat(B, N, 1, 1)}
+
+
+   model = Rig3R(
+       encoder_ckpt=None,
+       img_size=H,
+       patch_size=8,
+       embed_dim=64,
+       metadata_dim=64,
+       num_decoder_layers=1,
+       num_heads=2,
+       mlp_dim=128,
+   )
+   model.eval()
+
+
+   with torch.no_grad():
+       folded = model(images, metadata)
+
+
+       # the old path: encode one view at a time, concatenate along the token axis
+       looped_tokens = torch.cat(
+           [model.encoder(images[:, i])["tokens"] for i in range(N)], dim=1
+       )
+       expected = model.decoder(
+           looped_tokens, frames=N, metadata=metadata, cam2rig=metadata["cam2rig"]
+       )
+
+
+   print("looped_tokens:", looped_tokens.shape, "keys:", sorted(folded.keys()))
+
+   assert folded.keys() == expected.keys()
+   for key in expected:
+       torch.testing.assert_close(folded[key], expected[key], rtol=1e-4, atol=1e-5)
+       print(f"{key}: {tuple(folded[key].shape)} max abs diff "
+             f"{(folded[key] - expected[key]).abs().max().item():.3e}")
+
+
 if __name__ == "__main__":
     test_rig3r_forward()
+    test_view_fold_matches_per_view_loop()
