@@ -1,4 +1,3 @@
-import torch
 import torch.nn as nn
 
 from models.encoder_vit import ViTEncoder
@@ -52,14 +51,11 @@ class Rig3R(nn.Module):
 
         B, N, C, H, W = images.shape
 
-        # --- Encode each image ---
-        tokens_list = []
-        for i in range(N):
-            enc_out = self.encoder(images[:, i])
-            tokens_list.append(enc_out["tokens"]) # (B, num_patches, C)
+        # --- Encode every view in one pass ---
+        tokens = self.encoder(images.reshape(B * N, C, H, W))["tokens"]   # (B*N, num_patches, C)
 
         # --- Concatenate tokens from all views ---
-        joint_tokens = torch.cat(tokens_list, dim=1) # (B, N * num_patches, C)
+        joint_tokens = tokens.reshape(B, N * tokens.shape[1], tokens.shape[2])
 
         # --- Decode with rig-aware transformer ---
         dec_tokens = self.decoder(joint_tokens, frames=N, metadata=metadata, cam2rig=metadata["cam2rig"] if metadata else None) # (B, N * num_patches, C)
