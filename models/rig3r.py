@@ -1,6 +1,4 @@
-import torch
 import torch.nn as nn
-from yaml import tokens
 
 from models.encoder_vit import ViTEncoder
 from models.decoder_transformer import RigAwareTransformerDecoder
