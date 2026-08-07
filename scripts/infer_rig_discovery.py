@@ -52,12 +52,11 @@ def main():
     model_ckpt = Path.cwd().joinpath(cfg["checkpoint"])
     model = Rig3R(
         img_size=image_size[0],
-        patch_size=8,
-        embed_dim=128,
-        metadata_dim=128,
+        patch_size=16,
+        embed_dim=1024,
         num_decoder_layers=2,
-        num_heads=2,
-        mlp_dim=128*4
+        num_heads=8,
+        mlp_dim=4096
     )
     
     # We need to handle the fact that we changed the head dimension.

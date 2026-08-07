@@ -12,12 +12,12 @@ class Rig3R(nn.Module):
         self,
         encoder_ckpt=None,
         img_size=384,
-        patch_size=8,
+        patch_size=16,
         embed_dim=1024,
-        metadata_dim=64,
         num_decoder_layers=6,
         num_heads=8,
-        mlp_dim=2048
+        mlp_dim=2048,
+        freeze_encoder=True
     ):
         super().__init__()
 
@@ -26,7 +26,8 @@ class Rig3R(nn.Module):
             checkpoint_path=encoder_ckpt,
             img_size=img_size,
             patch_size=patch_size,
-            embed_dim=embed_dim
+            embed_dim=embed_dim,
+            freeze=freeze_encoder
         )
 
         # --- Rig-aware Transformer Decoder ---
@@ -34,7 +35,6 @@ class Rig3R(nn.Module):
             embed_dim=embed_dim,
             num_layers=num_decoder_layers,
             num_heads=num_heads,
-            metadata_dim=metadata_dim,
             mlp_dim=mlp_dim,
             img_size=img_size,
             patch_size=patch_size

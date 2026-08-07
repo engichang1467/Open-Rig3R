@@ -67,10 +67,12 @@ class PointMapHead(nn.Module):
         # Project from token dim to hidden dim
         self.input_proj = nn.Conv2d(in_dim, hidden_dim, kernel_size=1)
 
-        # 3 Fusion blocks for 8x upsampling (48 → 96 → 192 → 384)
-        self.fusion1 = FusionBlock(hidden_dim)
-        self.fusion2 = FusionBlock(hidden_dim)
-        self.fusion3 = FusionBlock(hidden_dim)
+        # Each fusion block upsamples 2x, so it takes log2(patch_size) of them to get
+        # the patch grid back to image resolution: 8 -> 3 blocks, 16 -> 4 blocks.
+        num_fusion = patch_size.bit_length() - 1
+        if 2 ** num_fusion != patch_size:
+            raise ValueError(f"patch_size must be a power of 2, got {patch_size}")
+        self.fusion = nn.ModuleList(FusionBlock(hidden_dim) for _ in range(num_fusion))
 
         # Output heads: 3 channels for XYZ pointmap, 1 channel for confidence
         self.output_conv = nn.Conv2d(hidden_dim, 4, kernel_size=1)
@@ -95,16 +97,13 @@ class PointMapHead(nn.Module):
         # Project to hidden dimension
         x = self.input_proj(x)  # (B*V, hidden_dim, 48, 48)
 
-        # Progressive upsampling through fusion blocks
+        # Progressive 2x upsampling, e.g. 48 -> 96 -> 192 -> 384
         # Use gradient checkpointing during training to reduce memory usage
-        if self.training and self.use_gradient_checkpointing:
-            x = checkpoint(self.fusion1, x, use_reentrant=False)  # (B*V, hidden_dim, 96, 96)
-            x = checkpoint(self.fusion2, x, use_reentrant=False)  # (B*V, hidden_dim, 192, 192)
-            x = checkpoint(self.fusion3, x, use_reentrant=False)  # (B*V, hidden_dim, 384, 384)
-        else:
-            x = self.fusion1(x)  # (B*V, hidden_dim, 96, 96)
-            x = self.fusion2(x)  # (B*V, hidden_dim, 192, 192)
-            x = self.fusion3(x)  # (B*V, hidden_dim, 384, 384)
+        for fusion in self.fusion:
+            if self.training and self.use_gradient_checkpointing:
+                x = checkpoint(fusion, x, use_reentrant=False)
+            else:
+                x = fusion(x)
 
         # Output projection
         out = self.output_conv(x)  # (B*V, 4, 384, 384)

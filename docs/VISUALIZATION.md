@@ -254,7 +254,7 @@ The model returns:
 | `pose_raymap` | `(B, V, P, 3)` | Unit ray directions in camera frame (patch-level) |
 | `rig_raymap` | `(B, V, P, 6)` | Ray origins and directions in rig frame (patch-level) |
 
-`P = (image_size / patch_size)²`. For the default 128×128 image with patch size 8, `P = 256`.
+`P = (image_size / patch_size)²`. For the default 128×128 image with patch size 16, `P = 64`.
 
 ---
 

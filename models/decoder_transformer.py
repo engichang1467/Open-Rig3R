@@ -58,7 +58,6 @@ class RigAwareTransformerDecoder(nn.Module):
             num_layers = 8,
             num_heads = 8,
             mlp_dim = 4096,
-            metadata_dim = 64,
             metadata_tokens = 1,
             metadata_dropout = 0.5,
             head_hidden = None,
@@ -68,7 +67,6 @@ class RigAwareTransformerDecoder(nn.Module):
     ):
         super().__init__()
         self.embed_dim = embed_dim
-        self.metadata_dim = metadata_dim
         self.metadata_tokens = metadata_tokens
         self.img_size = img_size
         self.patch_size = patch_size
@@ -78,8 +76,6 @@ class RigAwareTransformerDecoder(nn.Module):
             "cam2rig": nn.Linear(16, embed_dim)  # one token per view, a flattened 4x4 SE(3)
         })
 
-        # metadata projector: maps external metadata -> embed_dim tokens
-        self.meta_proj = nn.Linear(metadata_dim, embed_dim) if metadata_dim is not None else None
         # if metadata is not provided, we still support learned metadata tokens (learnable)
         self.learned_meta = nn.Parameter(torch.randn(1, metadata_tokens, embed_dim))
 
@@ -135,31 +131,26 @@ class RigAwareTransformerDecoder(nn.Module):
     def _prepare_metadata_tokens(self, metadata, batch_size, device):
         """
             Returns metadata tokens of shape (B, M, C).
-            - If metadata is provided: project it -> (B, M, C).
-            Expect metadata shape (B, M, metadata_dim). If metadata has fewer tokens,
-            it's still fine (we project element-wise).
+            - If metadata is provided: each key is projected to embed_dim by its own
+            entry in key_projs, so raw metadata widths need not match embed_dim.
             - If None: use learned tokens repeated over batch.
         """
         if metadata is None:
-            meta_tokens = self.learned_meta.expand(batch_size, -1, -1).to(device)  # (B, M, C)
-        
+            return self.learned_meta.expand(batch_size, -1, -1).to(device)  # (B, M, C)
+
         meta_list = self._collect_metadata_tensors(metadata, device)
 
         if len(meta_list) == 0:
             return self.learned_meta.expand(batch_size, -1, -1).to(device)
 
-        meta_tokens = torch.cat(meta_list, dim=1)
-
-        if self.meta_proj:
-            meta_tokens = self.meta_proj(meta_tokens)
-        
-        return self.metadata_dropout(meta_tokens)
+        return self.metadata_dropout(torch.cat(meta_list, dim=1))
     
     def forward(self, tokens, frames, metadata=None, cam2rig=None):
         """
             tokens: (B, V * P, C)
             frames: V (int)
-            metadata: Optional (B, M, metadata_dim)  (M == metadata_tokens recommended)
+            metadata: Optional dict of per-key tensors, each projected to embed_dim
+                by key_projs (e.g. cam2rig: (B, V, 4, 4))
         """
         B, T_total, C = tokens.shape
         assert C == self.embed_dim, f"tokens embed dim {C} != decoder embed_dim {self.embed_dim}"
