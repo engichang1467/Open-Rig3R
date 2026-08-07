@@ -124,12 +124,11 @@ model = Rig3R(
     encoder_ckpt=pretrain_ckpt_path,
     img_size=img_size[0],
     patch_size=patch_size,
-    embed_dim=128,
-    metadata_dim=128,
+    embed_dim=1024,
     num_decoder_layers=2,
-    num_heads=2,
-    mlp_dim=128*4
-) 
+    num_heads=8,
+    mlp_dim=4096
+)
         
 model.to(device)
 

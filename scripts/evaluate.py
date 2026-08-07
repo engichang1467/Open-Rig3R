@@ -55,12 +55,11 @@ print(f"Loaded {len(dataset)} sequences from Wayve101")
 model_ckpt = Path.cwd().joinpath(eval_cfg["checkpoint"])
 model = Rig3R(
     img_size=image_size[0],
-    patch_size=8,
-    embed_dim=128,
-    metadata_dim=128,
+    patch_size=16,
+    embed_dim=1024,
     num_decoder_layers=2,
-    num_heads=2,
-    mlp_dim=128*4
+    num_heads=8,
+    mlp_dim=4096
 )
 model.load_state_dict(torch.load(model_ckpt, map_location=device))
 model.to(device)

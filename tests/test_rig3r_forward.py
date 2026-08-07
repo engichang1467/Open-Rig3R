@@ -10,8 +10,7 @@ sys.path.append(str(root_path))
 from models.rig3r import Rig3R
 
 def test_rig3r_forward():
-    B, N, C, H, W = 2, 3, 3, 384, 384  # batch, views, channels, image size
-    # B, N, C, H, W = 1, 1, 3, 128, 128  # batch, views, channels, image size
+    B, N, C, H, W = 2, 3, 3, 128, 128  # batch, views, channels, image size
     dummy_images = torch.randn(B, N, C, H, W)
 
     # Optional: add slight variation per view to mimic multi-view captures
@@ -25,30 +24,18 @@ def test_rig3r_forward():
         "cam2rig": torch.eye(4).repeat(B, N, 1, 1)  # (B, V, 4, 4) per-view SE(3)
     }
 
-    # Initialize model
-    # model = Rig3R(
-    #     encoder_ckpt=None,    # use sinusoidal encoder for test
-    #     img_size=H,
-    #     patch_size=16,
-    #     embed_dim=64,
-    #     metadata_dim=64,
-    #     num_decoder_layers=1,  # small for test
-    #     num_heads=2,
-    #     mlp_dim=128
-    # )
-
     ckpt_path = Path.cwd().joinpath("checkpoints/pretrained/DUSt3R_ViTLarge_BaseDecoder_512_dpt.pth")
 
+    # encoder dims are fixed by the DUSt3R ViT-L/16 checkpoint; only the decoder
+    # is free to be small here
     model = Rig3R(
-        encoder_ckpt=ckpt_path,    # use sinusoidal encoder for test
-        # encoder_ckpt=None,    # use sinusoidal encoder for test
+        encoder_ckpt=ckpt_path,
         img_size=H,
-        patch_size=8,
-        embed_dim=384,
-        metadata_dim=384,
-        num_decoder_layers=4,  # small for test
-        num_heads=6,
-        mlp_dim=384*4
+        patch_size=16,
+        embed_dim=1024,
+        num_decoder_layers=1,  # small for test
+        num_heads=8,
+        mlp_dim=1024
     )
 
     # Forward pass
@@ -93,7 +80,6 @@ def test_view_fold_matches_per_view_loop():
        img_size=H,
        patch_size=8,
        embed_dim=64,
-       metadata_dim=64,
        num_decoder_layers=1,
        num_heads=2,
        mlp_dim=128,

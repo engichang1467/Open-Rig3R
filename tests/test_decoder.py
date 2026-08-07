@@ -23,7 +23,6 @@ decoder = RigAwareTransformerDecoder(
     num_layers=4,
     num_heads=4,
     mlp_dim=C * 4,
-    metadata_dim=None,
     metadata_tokens=2,
     metadata_dropout=0.3,
     attn_dropout=0.0,
@@ -31,8 +30,6 @@ decoder = RigAwareTransformerDecoder(
     patch_size=patch_size
 )
 
-# dummy metadata: (B, M, metadata_dim)
-# meta = torch.randn(B, 2, 32)
 # dummy metadata: dictionary with cam2rig
 metadata = {
     "cam2rig": torch.eye(4).repeat(B, V, 1, 1)  # (B, V, 4, 4) per-view SE(3)
