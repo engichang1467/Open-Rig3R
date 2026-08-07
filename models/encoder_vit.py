@@ -2,6 +2,7 @@ import torch
 import argparse
 import timm
 import torch.nn as nn
+from timm.layers.pos_embed_sincos import build_sincos2d_pos_embed
 
 # allow argparse.Namespace inside the checkpoint
 torch.serialization.add_safe_globals([argparse.Namespace])
@@ -39,10 +40,15 @@ class ViTEncoder(nn.Module):
             class_token=False,
             global_pool="",
             num_classes=0,
-            # ponytail: no positional signal at all right now, so the encoder is
-            # permutation-equivariant over patches. Rig3R sec 3.3 specifies 2D
-            # sine-cosine (not the checkpoint's RoPE100) - see issue #42.
-            pos_embed="none",
+            pos_embed="learn",  # overwritten below with a fixed sine-cosine table
+        )
+
+        # Rig3R sec 3.3 encodes patches with 2D sine-cosine, not the checkpoint's
+        # RoPE100, so this table is generated rather than loaded and stays frozen
+        # even when the rest of the encoder is fine-tuned.
+        self.vit.pos_embed = nn.Parameter(
+            build_sincos2d_pos_embed(self.vit.patch_embed.grid_size, embed_dim).unsqueeze(0),
+            requires_grad=False,
         )
 
         if checkpoint_path is not None:
@@ -71,10 +77,15 @@ class ViTEncoder(nn.Module):
                 f"Top-level keys: {sorted(state_dict)[:10]}"
             )
 
+        # pos_embed is ours (sine-cosine, sec 3.3), not DUSt3R's - carry the one built
+        # in __init__ through so the load below can stay strict.
+        loaded = len(encoder_weights)
+        encoder_weights["pos_embed"] = self.vit.pos_embed
+
         # strict: a silent no-op load is the bug this replaces. Any name or shape
         # drift - wrong embed_dim, wrong patch_size - must raise, not print.
         self.vit.load_state_dict(encoder_weights, strict=True)
-        print(f"Loaded {len(encoder_weights)} DUSt3R encoder tensors from {checkpoint_path}")
+        print(f"Loaded {loaded} DUSt3R encoder tensors from {checkpoint_path}")
 
     def forward(self, x):
         # forward_features applies patch embed + blocks + the loaded enc_norm
