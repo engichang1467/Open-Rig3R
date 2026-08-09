@@ -35,7 +35,7 @@ metadata = {
     "cam2rig": torch.eye(4).repeat(B, V, 1, 1)  # (B, V, 4, 4) per-view SE(3)
 }
 
-out = decoder(tokens, frames=V, metadata=metadata, cam2rig=metadata["cam2rig"])
+out = decoder(tokens, frames=V, metadata=metadata)
 print("pointmap shape:", out["pointmap"].shape)    # (B, V, H*W, 3) dense predictions
 print("pointmap_conf shape:", out["pointmap_conf"].shape)  # (B, V, H*W, 1) confidence
 print("pose_raymap shape:", out["pose_raymap"].shape)  # (B, V, P, 3)

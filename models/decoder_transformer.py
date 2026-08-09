@@ -145,7 +145,7 @@ class RigAwareTransformerDecoder(nn.Module):
 
         return self.metadata_dropout(torch.cat(meta_list, dim=1))
     
-    def forward(self, tokens, frames, metadata=None, cam2rig=None):
+    def forward(self, tokens, frames, metadata=None):
         """
             tokens: (B, V * P, C)
             frames: V (int)
@@ -192,7 +192,7 @@ class RigAwareTransformerDecoder(nn.Module):
 
         N = frames * patches_per_frame
         flat_reshaped = flat.view(B, N, C)
-        rig_preds = self.rig_raymap_head(flat_reshaped, cam2rig=cam2rig)
+        rig_preds = self.rig_raymap_head(flat_reshaped)
 
         rig_preds = rig_preds.view(B, frames, patches_per_frame, 6)
 
