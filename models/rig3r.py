@@ -58,6 +58,6 @@ class Rig3R(nn.Module):
         joint_tokens = tokens.reshape(B, N * tokens.shape[1], tokens.shape[2])
 
         # --- Decode with rig-aware transformer ---
-        dec_tokens = self.decoder(joint_tokens, frames=N, metadata=metadata, cam2rig=metadata["cam2rig"] if metadata else None) # (B, N * num_patches, C)
+        dec_tokens = self.decoder(joint_tokens, frames=N, metadata=metadata) # (B, N * num_patches, C)
 
         return dec_tokens
