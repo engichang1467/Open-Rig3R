@@ -37,3 +37,8 @@ device: "cuda"
 metadata_dropout: 0.5
 # Reproducibility: same seed = same init, same shuffle, same metadata dropout
 seed: 0
+
+# Autocast dtype. Left unset it picks bf16 on Ampere or newer and falls back to
+# fp16 + GradScaler below that. Set it to force a choice, e.g. "float16" to
+# reproduce a pre-bf16 run, or "float32" to rule AMP out while debugging.
+# amp_dtype: float16

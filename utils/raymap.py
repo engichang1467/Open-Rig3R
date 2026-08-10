@@ -90,22 +90,35 @@ def build_raymap_targets(cam2rig, intrinsics, world_from_rig, image_size, patch_
         image_size:     (H, W)
         patch_size:     model patch size
     Returns:
-        {"rig_raymap": (B, V, P, 6), "pose_raymap": (B, V, P, 3)}
+        {"rig_raymap":  (B, V, P, 6), "camera_center_rig":  (B, V, 3),
+         "pose_raymap": (B, V, P, 6), "camera_center_pose": (B, V, 3)}
+
+        Each raymap is the frame's camera centre broadcast over its patches,
+        concatenated with per-patch unit ray directions, matching the head's output.
+        The centres are returned separately because Eq. 4 scores them on their own
+        term - all rays of a frame share one centre, so it is not P values.
     """
     directions = camera_ray_directions(intrinsics, image_size, patch_size)
 
-    # --- rig frame: origin is the camera's mounting point, static per camera ---
+    # --- rig frame: centre is the camera's mounting point, static per camera ---
     rotation = cam2rig[..., :3, :3]
-    translation = cam2rig[..., :3, 3]
+    rig_center = cam2rig[..., :3, 3]
     rig_directions = torch.einsum("bvij,bvpj->bvpi", rotation, directions)
-    rig_origins = translation.unsqueeze(2).expand_as(rig_directions)
-    rig_raymap = torch.cat([rig_origins, rig_directions], dim=-1)
 
     # --- pose frame: relative to view 0, so rig motion shows up in the target ---
     transform = reference_from_camera(cam2rig, world_from_rig)
+    pose_center = transform[..., :3, 3]
     pose_directions = torch.einsum("bvij,bvpj->bvpi", transform[..., :3, :3], directions)
+    pose_directions = torch.nn.functional.normalize(pose_directions, dim=-1)
 
     return {
-        "rig_raymap": rig_raymap,
-        "pose_raymap": torch.nn.functional.normalize(pose_directions, dim=-1),
+        "rig_raymap": _raymap(rig_center, rig_directions),
+        "camera_center_rig": rig_center,
+        "pose_raymap": _raymap(pose_center, pose_directions),
+        "camera_center_pose": pose_center,
     }
+
+
+def _raymap(center, directions):
+    """(B, V, 3) centre + (B, V, P, 3) directions -> (B, V, P, 6)"""
+    return torch.cat([center.unsqueeze(2).expand_as(directions), directions], dim=-1)

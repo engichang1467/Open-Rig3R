@@ -5,8 +5,7 @@ import torch.nn.functional as F
 from typing import Optional, Tuple
 
 from models.heads.pointmap_head import PointMapHead 
-from models.heads.rig_raymap_head import RigRaymapHead
-from models.heads.pose_raymap_head import PoseRaymapHead
+from models.heads.raymap_head import RaymapHead
 
 class PreNormTransformerBlock(nn.Module):
     """
@@ -114,8 +113,8 @@ class RigAwareTransformerDecoder(nn.Module):
             img_size=img_size,
             patch_size=patch_size
         )
-        self.pose_raymap_head = PoseRaymapHead(in_dim=embed_dim)
-        self.rig_raymap_head = RigRaymapHead(in_dim=embed_dim)
+        self.pose_raymap_head = RaymapHead(in_dim=embed_dim)
+        self.rig_raymap_head = RaymapHead(in_dim=embed_dim)
 
         # optional final normalization before heads (stable)
         self.final_ln = nn.LayerNorm(embed_dim)
@@ -212,10 +211,6 @@ class RigAwareTransformerDecoder(nn.Module):
         # reshape into (B, V, P, C)
         proc_patches = proc_patches.view(B, frames, patches_per_frame, C)
 
-        # apply heads per token
-        # flatten tokens for head MLPs then reshape back
-        flat = proc_patches.reshape(B * frames * patches_per_frame, C)  # (B*V*P, C)
-
         # DPT pointmap head: expects (B*V, P, C), returns (B*V, H*W, 3), (B*V, H*W, 1)
         dpt_input = proc_patches.reshape(B * frames, patches_per_frame, C)  # (B*V, P, C)
         point_preds, conf_preds = self.pointmap_head(dpt_input)
@@ -224,18 +219,17 @@ class RigAwareTransformerDecoder(nn.Module):
         point_preds = point_preds.view(B, frames, H_W, 3)
         conf_preds = conf_preds.view(B, frames, H_W, 1)
 
-        pose_preds = self.pose_raymap_head(flat).reshape(B, frames, patches_per_frame, 3)
-
-        N = frames * patches_per_frame
-        flat_reshaped = flat.view(B, N, C)
-        rig_preds = self.rig_raymap_head(flat_reshaped)
-
-        rig_preds = rig_preds.view(B, frames, patches_per_frame, 6)
+        # The raymap heads pool over each frame's patches to get its camera center,
+        # so they take the frame-grouped tokens rather than one flat token stream.
+        pose_preds, pose_center = self.pose_raymap_head(proc_patches)
+        rig_preds, rig_center = self.rig_raymap_head(proc_patches)
 
         return {
             "pointmap": point_preds,  # (B, V, H*W, 3) dense predictions
             "pointmap_conf": conf_preds,  # (B, V, H*W, 1) confidence
-            "pose_raymap": pose_preds,
-            "rig_raymap": rig_preds,
+            "pose_raymap": pose_preds,  # (B, V, P, 6) center + unit direction
+            "rig_raymap": rig_preds,  # (B, V, P, 6) center + unit direction
+            "camera_center_pose": pose_center,  # (B, V, 3) one center per frame
+            "camera_center_rig": rig_center,  # (B, V, 3)
             "features": proc_patches  # (B, V, P, C) for debugging / downstream heads if needed
         }
