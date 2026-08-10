@@ -26,3 +26,5 @@ device: "cpu"
 
 # Metadata dropout
 metadata_dropout: 0.5
+# Reproducibility: same seed = same init, same shuffle, same metadata dropout
+seed: 0

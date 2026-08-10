@@ -78,6 +78,7 @@ class RigAwareTransformerDecoder(nn.Module):
             num_layers = 8,
             num_heads = 8,
             mlp_dim = 4096,
+            metadata_dropout = 0.5,
             head_hidden = None,
             attn_dropout = 0.0,
             img_size = 384,
@@ -87,6 +88,7 @@ class RigAwareTransformerDecoder(nn.Module):
         self.embed_dim = embed_dim
         self.img_size = img_size
         self.patch_size = patch_size
+        self.metadata_dropout = metadata_dropout
 
         # sec 3.3: the metadata components are concatenated and added to the patch
         # tokens, so each one owns an equal slice of the embedding
@@ -113,6 +115,23 @@ class RigAwareTransformerDecoder(nn.Module):
         # optional final normalization before heads (stable)
         self.final_ln = nn.LayerNorm(embed_dim)
     
+    def _keep_mask(self, B, dims, device):
+        """Per-sample keep/drop mask for one metadata field. (B, 1, ... ) broadcastable
+
+        Sec 3.4 Embedding Dropout: each field is dropped with 50% probability during
+        training so the model learns to infer missing context rather than lean on it.
+        Masking the *embedding* rather than the raw value is what makes a dropped field
+        read as absent - a zeroed camera ID would still encode as camera zero.
+
+        Not scaled by 1/(1-p) the way nn.Dropout is: absent has to look at inference
+        time exactly like it did during training, or dropout itself becomes a train
+        /test mismatch.
+        """
+        if not self.training or self.metadata_dropout <= 0:
+            return torch.ones((1,) * dims, device=device)
+        keep = torch.rand(B, device=device) >= self.metadata_dropout
+        return keep.float().view(B, *([1] * (dims - 1)))
+
     def _metadata_embedding(self, metadata, B, frames, patches_per_frame, device):
         """Per-patch metadata embedding to add to the patch tokens. (B, V * P, C)
 
@@ -132,15 +151,16 @@ class RigAwareTransformerDecoder(nn.Module):
         if frame_index is None:
             frame_index = torch.arange(frames, device=device).expand(B, frames)
 
-        # per-view fields: encoded once per view, then broadcast across its patches
+        # per-view fields: encoded once per view, then broadcast across its patches.
+        # The frame index is never dropped (sec 3.3), the rest are.
         per_view = [sincos1d(frame_index.to(device), self.meta_dim)]
         for key in ("camera_id", "timestamp"):
             value = metadata.get(key)
-            per_view.append(
-                torch.zeros(B, frames, self.meta_dim, device=device)
-                if value is None
-                else sincos1d(value.to(device), self.meta_dim)
-            )
+            if value is None:
+                per_view.append(torch.zeros(B, frames, self.meta_dim, device=device))
+            else:
+                encoded = sincos1d(value.to(device), self.meta_dim)
+                per_view.append(encoded * self._keep_mask(B, encoded.dim(), device))
 
         embedding = torch.cat(per_view, dim=-1).unsqueeze(2)  # (B, V, 1, 3 * meta_dim)
         embedding = embedding.expand(B, frames, patches_per_frame, -1)

@@ -1,4 +1,5 @@
 import os
+import random
 import yaml
 import torch
 import argparse
@@ -43,6 +44,14 @@ def load_config(config_path):
 args = parse_args()
 train_cfg = load_config(args.config)
 
+# Without this every run draws a different init and a different shuffle, so two runs
+# of the same config cannot be compared - which is what made the 37a A/B unreadable.
+# DataLoader workers inherit deterministic per-worker seeds from the torch seed.
+seed = train_cfg.get("seed", 0)
+random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
+
 device = torch.device(train_cfg.get("device", "cuda") if torch.cuda.is_available() else "cpu")
 dataset_type = train_cfg.get("dataset_type", "co3d")
 
@@ -60,8 +69,7 @@ if dataset_type == "co3d":
         subset="train",
         n_frames=train_cfg["n_frames"],
         image_size=img_size,
-        transforms=get_train_transforms(image_size=img_size),
-        metadata_dropout=train_cfg.get("metadata_dropout", 0.5)
+        transforms=get_train_transforms(image_size=img_size)
     )
 
     val_dataset = Co3DDataset(
@@ -69,8 +77,7 @@ if dataset_type == "co3d":
         subset="val",
         n_frames=train_cfg["n_frames"],
         image_size=img_size,
-        transforms=get_val_transforms(image_size=img_size),
-        metadata_dropout=0.0
+        transforms=get_val_transforms(image_size=img_size)
     )
 
 elif dataset_type == "waymo":
@@ -127,7 +134,8 @@ model = Rig3R(
     embed_dim=1024,
     num_decoder_layers=2,
     num_heads=8,
-    mlp_dim=4096
+    mlp_dim=4096,
+    metadata_dropout=train_cfg.get("metadata_dropout", 0.5)
 )
         
 model.to(device)
@@ -248,7 +256,7 @@ run = wandb.init(
     project=train_cfg.get("wandb_project", "open-rig3r"),
     entity=train_cfg.get("wandb_entity"),
     name=train_cfg.get("wandb_run_name"),
-    mode=train_cfg.get("wandb_mode", "online"),  # "offline" / "disabled" for no network
+    mode=train_cfg.get("wandb_mode", "offline"),  # "offline" / "disabled" for no network
     config={**train_cfg, "config_file": args.config, "device": str(device)},
     dir="runs",
 )

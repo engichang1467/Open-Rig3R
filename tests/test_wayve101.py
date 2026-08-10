@@ -24,8 +24,7 @@ dataset = Wayve101Dataset(
     n_frames=2,
     image_size=img_size,
     transforms=transform,
-    use_masks=True,
-    metadata_dropout=0.0
+    use_masks=True
 )
 
 # --- Grab one sample ---

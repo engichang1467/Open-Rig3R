@@ -14,16 +14,32 @@ B, V, P, C = 2, 3, 4, 64
 IMG_SIZE, PATCH_SIZE = 16, 8
 
 
-def build_decoder():
+def build_decoder(metadata_dropout=0.0):
     return RigAwareTransformerDecoder(
         embed_dim=C,
         num_layers=1,
         num_heads=2,
         mlp_dim=C * 2,
+        metadata_dropout=metadata_dropout,
         attn_dropout=0.0,
         img_size=IMG_SIZE,
         patch_size=PATCH_SIZE,
     ).eval()
+
+
+def full_metadata(B_=B, V_=V):
+    return {
+        "frame_index": torch.arange(V_).expand(B_, V_),
+        "camera_id": torch.arange(V_).expand(B_, V_) % 2,
+        "timestamp": torch.linspace(0, 1, V_).expand(B_, V_),
+    }
+
+
+def slice_of(embedding, field):
+    """Pull one field's slice out of a (B, V, P, C) metadata embedding."""
+    index = METADATA_FIELDS.index(field)
+    width = C // len(METADATA_FIELDS)
+    return embedding[..., index * width:(index + 1) * width]
 
 
 def test_frame_index_distinguishes_identical_views():
@@ -108,9 +124,68 @@ def test_sincos1d_encodes_continuous_values():
     print("sincos1d separates continuous values test passed!")
 
 
+def test_dropout_is_off_at_eval():
+    """Inference must see every field it was given, every time."""
+    decoder = build_decoder(metadata_dropout=0.5).eval()
+    metadata = full_metadata()
+
+    for _ in range(20):
+        embedding = decoder._metadata_embedding(
+            metadata, B, V, P, torch.device("cpu")
+        ).view(B, V, P, C)
+        assert slice_of(embedding, "camera_id").abs().max() > 0
+        assert slice_of(embedding, "timestamp").abs().max() > 0
+
+    print("Dropout is inactive at eval test passed!")
+
+
+def test_dropout_masks_whole_fields_per_sample():
+    """Sec 3.4: each field is dropped independently, per sample, at ~50%."""
+    torch.manual_seed(0)
+    decoder = build_decoder(metadata_dropout=0.5).train()
+    metadata = full_metadata(B_=64)
+
+    dropped = {"camera_id": 0, "timestamp": 0, "frame_index": 0}
+    trials = 40
+    for _ in range(trials):
+        embedding = decoder._metadata_embedding(
+            metadata, 64, V, P, torch.device("cpu")
+        ).view(64, V, P, C)
+        for field in dropped:
+            # a dropped sample has that field's slice fully zeroed
+            per_sample = slice_of(embedding, field).abs().amax(dim=(1, 2, 3))
+            dropped[field] += int((per_sample == 0).sum())
+
+    total = trials * 64
+    for field in ("camera_id", "timestamp"):
+        rate = dropped[field] / total
+        print(f"{field:12s} dropped {rate:.3f} of the time")
+        assert 0.4 < rate < 0.6, f"{field} dropped at {rate}, expected ~0.5"
+
+    assert dropped["frame_index"] == 0, "the frame index must never be dropped"
+    print("Fields drop independently per sample test passed!")
+
+
+def test_dropped_field_matches_absent_field():
+    """A dropped field must be indistinguishable from one that was never supplied."""
+    decoder = build_decoder(metadata_dropout=1.0).train()  # drop everything droppable
+    device = torch.device("cpu")
+
+    dropped = decoder._metadata_embedding(full_metadata(), B, V, P, device)
+    absent = build_decoder(metadata_dropout=0.0).eval()._metadata_embedding(
+        {"frame_index": torch.arange(V).expand(B, V)}, B, V, P, device
+    )
+
+    torch.testing.assert_close(dropped, absent)
+    print("Dropped reads as absent test passed!")
+
+
 if __name__ == "__main__":
     test_frame_index_distinguishes_identical_views()
     test_frame_index_is_synthesised_when_absent()
     test_absent_field_leaves_its_slice_at_zero()
     test_metadata_is_added_not_prepended()
     test_sincos1d_encodes_continuous_values()
+    test_dropout_is_off_at_eval()
+    test_dropout_masks_whole_fields_per_sample()
+    test_dropped_field_matches_absent_field()
