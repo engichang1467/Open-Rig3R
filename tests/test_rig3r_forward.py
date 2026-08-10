@@ -11,7 +11,7 @@ sys.path.append(str(root_path))
 
 from models.rig3r import Rig3R
 from models.decoder_transformer import RigAwareTransformerDecoder
-from models.heads.rig_raymap_head import RigRaymapHead
+from models.heads.raymap_head import RaymapHead
 from utils.raymap import build_raymap_targets
 
 def test_rig3r_forward():
@@ -211,8 +211,8 @@ def test_extrinsics_never_reach_rig_head():
     params = inspect.signature(RigAwareTransformerDecoder.forward).parameters
     assert "cam2rig" not in params, f"decoder.forward takes cam2rig: {list(params)}"
 
-    head = RigRaymapHead(in_dim=32, hidden_dim=16).eval()
-    tokens = torch.randn(1, LEAK_VIEWS * LEAK_PATCHES, 32)
+    head = RaymapHead(in_dim=32, hidden_dim=16).eval()
+    tokens = torch.randn(1, LEAK_VIEWS, LEAK_PATCHES, 32)
     cam2rig, _ = _rig_target()
 
     try:
@@ -224,22 +224,61 @@ def test_extrinsics_never_reach_rig_head():
     print("No extrinsics reach the rig raymap head test passed!")
 
 
-def test_normalize_touches_directions_only():
-    """normalize=True is off by default, so nothing else covers this branch."""
+def test_camera_center_is_one_per_frame():
+    """Sec 3.1: all of a frame's rays share a single centre, not one per patch."""
     torch.manual_seed(0)
-    head = RigRaymapHead(in_dim=32, hidden_dim=16, normalize=True).eval()
-    plain = RigRaymapHead(in_dim=32, hidden_dim=16, normalize=False).eval()
-    plain.load_state_dict(head.state_dict())
+    head = RaymapHead(in_dim=32, hidden_dim=16).eval()
+    tokens = torch.randn(1, LEAK_VIEWS, LEAK_PATCHES, 32)
 
-    tokens = torch.randn(1, LEAK_VIEWS * LEAK_PATCHES, 32)
     with torch.no_grad():
-        normed, raw = head(tokens), plain(tokens)
+        raymap, center = head(tokens)
 
-    torch.testing.assert_close(normed[..., :3], raw[..., :3])  # origins untouched
-    norms = normed[..., 3:].norm(dim=-1)
+    assert center.shape == (1, LEAK_VIEWS, 3), center.shape
+    assert raymap.shape == (1, LEAK_VIEWS, LEAK_PATCHES, 6), raymap.shape
+
+    # the centre half of the raymap is that one value repeated across the frame
+    centers = raymap[..., :3]
+    torch.testing.assert_close(centers, center.unsqueeze(2).expand_as(centers))
+
+    # and the frames genuinely differ, so it is not a global constant either
+    assert (center[0, 0] - center[0, 1]).abs().max() > 1e-6, "every frame got the same centre"
+    print("Camera centre is one per frame test passed!")
+
+
+def test_camera_center_pools_over_its_own_frame():
+    """Average pooling is per frame: perturbing one frame must not move the others."""
+    torch.manual_seed(0)
+    head = RaymapHead(in_dim=32, hidden_dim=16).eval()
+    tokens = torch.randn(1, LEAK_VIEWS, LEAK_PATCHES, 32)
+
+    nudged = tokens.clone()
+    nudged[0, 0, 0] += 5.0  # one patch of frame 0
+
+    with torch.no_grad():
+        _, before = head(tokens)
+        _, after = head(nudged)
+
+    moved = (after[0, 0] - before[0, 0]).abs().max()
+    leaked = (after[0, 1] - before[0, 1]).abs().max()
+    print(f"perturbed frame moved {moved:.3e}, other frame moved {leaked:.3e}")
+
+    assert moved > 1e-4, "the perturbed frame's centre did not react - pooling axis is wrong"
+    assert leaked == 0, "a perturbation leaked across frames - pooling is not per frame"
+    print("Camera centre pools over its own frame test passed!")
+
+
+def test_raymap_directions_are_unit_vectors():
+    """Sec 3.1 defines the direction field as unit vectors on S^2."""
+    torch.manual_seed(0)
+    head = RaymapHead(in_dim=32, hidden_dim=16).eval()
+    tokens = torch.randn(1, LEAK_VIEWS, LEAK_PATCHES, 32)
+
+    with torch.no_grad():
+        raymap, _ = head(tokens)
+
+    norms = raymap[..., 3:].norm(dim=-1)
     torch.testing.assert_close(norms, torch.ones_like(norms))
-    print(f"Origins preserved, direction norms in "
-          f"[{norms.min():.6f}, {norms.max():.6f}] test passed!")
+    print(f"Direction norms in [{norms.min():.6f}, {norms.max():.6f}] test passed!")
 
 
 if __name__ == "__main__":
@@ -248,4 +287,6 @@ if __name__ == "__main__":
     test_zero_prediction_no_longer_matches_rig_target()
     test_rig_raymap_metadata_matches_the_token_grid()
     test_extrinsics_never_reach_rig_head()
-    test_normalize_touches_directions_only()
+    test_camera_center_is_one_per_frame()
+    test_camera_center_pools_over_its_own_frame()
+    test_raymap_directions_are_unit_vectors()

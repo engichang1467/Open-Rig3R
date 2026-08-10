@@ -50,8 +50,10 @@ class MultiTaskLoss(nn.Module):
         # ==========================================================
         if 'pose_raymap' in preds and 'pose_raymap' in gts:
             # ---- Direction loss (cosine) ----
-            dir_pred = preds['pose_raymap']
-            dir_gt = gts['pose_raymap']
+            # channels 0:3 are the shared camera center, scored by its own term below;
+            # including them here would double-count it
+            dir_pred = preds['pose_raymap'][..., 3:]
+            dir_gt = gts['pose_raymap'][..., 3:]
             loss_dir_pose = 1.0 - F.cosine_similarity(dir_pred, dir_gt, dim=-1)
             loss_dir_pose = self._reduce(loss_dir_pose)
 
@@ -74,8 +76,8 @@ class MultiTaskLoss(nn.Module):
         # ==========================================================
         if 'rig_raymap' in preds and 'rig_raymap' in gts:
             # ---- Direction loss ----
-            dir_pred = preds['rig_raymap']
-            dir_gt = gts['rig_raymap']
+            dir_pred = preds['rig_raymap'][..., 3:]
+            dir_gt = gts['rig_raymap'][..., 3:]
             loss_dir_rig = 1.0 - F.cosine_similarity(dir_pred, dir_gt, dim=-1)
             loss_dir_rig = self._reduce(loss_dir_rig)
 

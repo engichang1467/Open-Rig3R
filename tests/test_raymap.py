@@ -120,10 +120,12 @@ def test_pose_raymap_is_relative_to_first_view():
     world_from_rig[0, 1, :3, 3] = torch.tensor([14.0, 5.0, 0.0])  # rig drove 4 m forward
 
     targets = build_raymap_targets(cam2rig, intrinsics, world_from_rig, IMAGE_SIZE, PATCH_SIZE)
-    pose = targets["pose_raymap"]
+    pose = targets["pose_raymap"][..., 3:]  # directions half
     camera = camera_ray_directions(intrinsics, IMAGE_SIZE, PATCH_SIZE)
 
-    assert pose.shape == (1, 2, P, 3), f"Got {tuple(pose.shape)}"
+    assert targets["pose_raymap"].shape == (1, 2, P, 6), (
+        f"Got {tuple(targets['pose_raymap'].shape)}"
+    )
     assert torch.allclose(pose[0, 0], camera[0, 0], atol=1e-5), (
         "View 0 in its own frame should equal its camera-frame rays"
     )
@@ -142,7 +144,7 @@ def test_pose_raymap_sees_rig_rotation():
     )
 
     targets = build_raymap_targets(cam2rig, intrinsics, world_from_rig, IMAGE_SIZE, PATCH_SIZE)
-    pose = targets["pose_raymap"]
+    pose = targets["pose_raymap"][..., 3:]  # directions half
 
     assert not torch.allclose(pose[0, 0], pose[0, 1], atol=1e-3), (
         "Pose targets are identical across a 90 degree turn - supervision is degenerate"
@@ -213,6 +215,37 @@ def test_pointmap_moves_into_reference_frame():
     print("✓ test_pointmap_moves_into_reference_frame passed")
 
 
+def test_camera_center_targets_are_per_frame():
+    """Eq. 4 scores the centre on its own term, so it is one value per view."""
+    cam2rig, intrinsics, world_from_rig = identity_batch(n_views=2)
+    mount = torch.tensor([1.5, -0.1, 2.1])
+    cam2rig[0, 1, :3, 3] = mount
+    world_from_rig[0, 1, :3, 3] = torch.tensor([4.0, 0.0, 0.0])  # rig drove forward
+
+    targets = build_raymap_targets(cam2rig, intrinsics, world_from_rig, IMAGE_SIZE, PATCH_SIZE)
+
+    rig_center = targets["camera_center_rig"]
+    pose_center = targets["camera_center_pose"]
+    assert rig_center.shape == (1, 2, 3), f"Got {tuple(rig_center.shape)}"
+    assert pose_center.shape == (1, 2, 3), f"Got {tuple(pose_center.shape)}"
+
+    # the rig centre is the mount, static regardless of where the rig drove
+    assert torch.allclose(rig_center[0, 0], torch.zeros(3)), "View 0 sits at the rig origin"
+    assert torch.allclose(rig_center[0, 1], mount), "View 1 centre should be its mount"
+
+    # the pose centre is relative to view 0, so it must pick up the rig's motion
+    assert torch.allclose(pose_center[0, 0], torch.zeros(3)), "View 0 is the reference"
+    assert pose_center[0, 1, 0] > 3.9, f"View 1 should sit ~4 m ahead, got {pose_center[0, 1]}"
+
+    # each raymap's centre half is that value broadcast across the frame's patches
+    for key, center in (("rig_raymap", rig_center), ("pose_raymap", pose_center)):
+        assert torch.allclose(
+            targets[key][..., :3], center.unsqueeze(2).expand(1, 2, P, 3)
+        ), f"{key} centre channels do not match camera_center"
+
+    print("✓ test_camera_center_targets_are_per_frame passed")
+
+
 def test_pointmap_lies_along_its_own_rays():
     """The end-to-end invariant: a target point sits on the ray of its own patch"""
     cam2rig, intrinsics, world_from_rig = identity_batch(n_views=2)
@@ -232,7 +265,7 @@ def test_pointmap_lies_along_its_own_rays():
     for view in range(2):
         offset = points[0, view] - centers[0, view]
         cosine = torch.nn.functional.cosine_similarity(
-            offset, targets["pose_raymap"][0, view], dim=-1
+            offset, targets["pose_raymap"][0, view, :, 3:], dim=-1
         )
         assert cosine.min() > 0.9999, f"View {view} points drift off their rays: {cosine.min()}"
     print("✓ test_pointmap_lies_along_its_own_rays passed")
@@ -247,6 +280,7 @@ def run_all_tests():
         test_rig_rotation_is_applied,
         test_pose_raymap_is_relative_to_first_view,
         test_pose_raymap_sees_rig_rotation,
+        test_camera_center_targets_are_per_frame,
         test_pointmap_pools_to_patch_grid,
         test_pointmap_confidence_tracks_coverage,
         test_pointmap_moves_into_reference_frame,
