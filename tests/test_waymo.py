@@ -180,6 +180,39 @@ def test_cam2rig_follows_camera_order(mock_data):
 
 
 @with_mock_dataset
+def test_metadata_fields_follow_view_order(mock_data):
+    """Rig3R sec 3.3 metadata must line up with the frame-major image stacking"""
+    n_frames = 2
+    dataset = WaymoDataset(root_dir=mock_data, split="train", n_frames=n_frames)
+    metadata = dataset[0]["metadata"]
+
+    n_cameras = len(CAMERAS)
+    n_views = n_frames * n_cameras
+
+    assert torch.equal(metadata["frame_index"], torch.arange(n_views)), (
+        "frame index must uniquely label every view"
+    )
+    # images are stacked [for t in timestamps: for cam in cameras], so the camera
+    # index cycles fastest and each camera ID reappears once per frame
+    assert torch.equal(metadata["camera_id"], torch.arange(n_views) % n_cameras), (
+        f"camera_id out of order: {metadata['camera_id'].tolist()}"
+    )
+    for camera in range(n_cameras):
+        assert (metadata["camera_id"] == camera).sum() == n_frames
+
+    # timestamps are seconds from the sample's first capture, one value per frame
+    timestamp = metadata["timestamp"]
+    assert timestamp.dtype == torch.float32, timestamp.dtype
+    assert timestamp[:n_cameras].abs().max() == 0, "first frame must sit at t=0"
+    assert torch.equal(timestamp[:n_cameras], timestamp[:n_cameras].flip(0)), (
+        "cameras in one frame share a timestamp"
+    )
+    assert timestamp[n_cameras] > 0, "later frames must have a positive offset"
+    assert timestamp.max() < 60, f"timestamps look like micros, not seconds: {timestamp.max()}"
+    print("✓ test_metadata_fields_follow_view_order passed")
+
+
+@with_mock_dataset
 def test_intrinsics_scaled_to_image_size(mock_data):
     """Intrinsics are exported at native resolution, so the loader must rescale"""
     dataset = WaymoDataset(root_dir=mock_data, split="train", n_frames=1, image_size=(64, 64))
@@ -372,6 +405,7 @@ def run_all_tests():
         test_dataset_getitem,
         test_cam2rig_is_real_calibration,
         test_cam2rig_follows_camera_order,
+        test_metadata_fields_follow_view_order,
         test_intrinsics_scaled_to_image_size,
         test_world_from_rig_is_per_frame,
         test_pointmap_is_loaded_per_view,

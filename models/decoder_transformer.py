@@ -35,15 +35,35 @@ class PreNormTransformerBlock(nn.Module):
         return x
     
 
+def sincos1d(values, dim, max_period=10000.0):
+    """1D sine-cosine embedding of arbitrary values. (..., ) -> (..., dim)
+
+    Takes floats, not just indices, so the same encoding covers the discrete IDs
+    and the normalized timestamp (Rig3R sec 3.3).
+    """
+    assert dim % 2 == 0, f"sincos1d needs an even dim, got {dim}"
+    half = dim // 2
+    freqs = torch.exp(
+        -math.log(max_period) * torch.arange(half, device=values.device) / half
+    )
+    args = values.float().unsqueeze(-1) * freqs
+    return torch.cat([torch.sin(args), torch.cos(args)], dim=-1)
+
+
+# Rig3R sec 3.3 metadata fields, in the order their slices are concatenated.
+# The rig raymap patch is per-patch rather than per-view, so it is built separately.
+METADATA_FIELDS = ("frame_index", "camera_id", "timestamp", "rig_raymap")
+
+
 class RigAwareTransformerDecoder(nn.Module):
     """
-        Joint self-attention decoder that attends over concatenated patch tokens from
-        all frames + optional metadata tokens.
+        Joint self-attention decoder over concatenated patch tokens from all frames,
+        with rig-aware metadata added to each patch token.
 
         Inputs:
         - tokens: Tensor (B, V * P, C) where V = frames/views, P = patches per view
         - frames: int, number of frames/views per example (V)
-        - metadata: Optional[Tensor] (B, M, meta_dim) or None
+        - metadata: Optional dict of per-view tensors; see _metadata_embedding
 
         Outputs:
         Dict with:
@@ -58,7 +78,6 @@ class RigAwareTransformerDecoder(nn.Module):
             num_layers = 8,
             num_heads = 8,
             mlp_dim = 4096,
-            metadata_tokens = 1,
             metadata_dropout = 0.5,
             head_hidden = None,
             attn_dropout = 0.0,
@@ -67,19 +86,21 @@ class RigAwareTransformerDecoder(nn.Module):
     ):
         super().__init__()
         self.embed_dim = embed_dim
-        self.metadata_tokens = metadata_tokens
         self.img_size = img_size
         self.patch_size = patch_size
+        self.metadata_dropout = metadata_dropout
 
-        # --- Per-key projections ---
-        self.key_projs = nn.ModuleDict({
-            "cam2rig": nn.Linear(16, embed_dim)  # one token per view, a flattened 4x4 SE(3)
-        })
+        # sec 3.3: the metadata components are concatenated and added to the patch
+        # tokens, so each one owns an equal slice of the embedding
+        assert embed_dim % (2 * len(METADATA_FIELDS)) == 0, (
+            f"embed_dim {embed_dim} must divide into {len(METADATA_FIELDS)} even slices"
+        )
+        self.meta_dim = embed_dim // len(METADATA_FIELDS)
 
-        # if metadata is not provided, we still support learned metadata tokens (learnable)
-        self.learned_meta = nn.Parameter(torch.randn(1, metadata_tokens, embed_dim))
-
-        self.metadata_dropout = nn.Dropout(metadata_dropout)
+        # sec 3.3: the rig raymap patch r_i in R^6 is linearly projected. The discrete
+        # IDs and the timestamp use parameter-free sine-cosine codes, so this is the
+        # only learned part of the metadata embedding.
+        self.rig_proj = nn.Linear(6, self.meta_dim)
 
         # transformer layers
         self.layers = nn.ModuleList([
@@ -99,58 +120,75 @@ class RigAwareTransformerDecoder(nn.Module):
         # optional final normalization before heads (stable)
         self.final_ln = nn.LayerNorm(embed_dim)
     
-    def _collect_metadata_tensors(self, metadata, device):
+    def _keep_mask(self, B, dims, device):
+        """Per-sample keep/drop mask for one metadata field. (B, 1, ... ) broadcastable
+
+        Sec 3.4 Embedding Dropout: each field is dropped with 50% probability during
+        training so the model learns to infer missing context rather than lean on it.
+        Masking the *embedding* rather than the raw value is what makes a dropped field
+        read as absent - a zeroed camera ID would still encode as camera zero.
+
+        Not scaled by 1/(1-p) the way nn.Dropout is: absent has to look at inference
+        time exactly like it did during training, or dropout itself becomes a train
+        /test mismatch.
         """
-        Extracts and normalizes metadata dict entries into a list of (B, M, D) tensors.
+        if not self.training or self.metadata_dropout <= 0:
+            return torch.ones((1,) * dims, device=device)
+        keep = torch.rand(B, device=device) >= self.metadata_dropout
+        return keep.float().view(B, *([1] * (dims - 1)))
+
+    def _metadata_embedding(self, metadata, B, frames, patches_per_frame, device):
+        """Per-patch metadata embedding to add to the patch tokens. (B, V * P, C)
+
+        Each field owns an equal slice of the embedding. A field that is absent or
+        dropped leaves its slice at zero, which is the whole masking mechanism.
+
+        Expected shapes, all optional except the frame index:
+            frame_index: (B, V) long   - sec 3.3 says N is always included, so it is
+                                         synthesised from view order when missing
+            camera_id:   (B, V) long
+            timestamp:   (B, V) float, seconds
+            rig_raymap:  (B, V, P, 6)  - per-patch, supplied during training only
         """
-        meta_list = []
-        for key, value in metadata.items():
+        metadata = metadata or {}
+
+        frame_index = metadata.get("frame_index")
+        if frame_index is None:
+            frame_index = torch.arange(frames, device=device).expand(B, frames)
+
+        # per-view fields: encoded once per view, then broadcast across its patches.
+        # The frame index is never dropped (sec 3.3), the rest are.
+        per_view = [sincos1d(frame_index.to(device), self.meta_dim)]
+        for key in ("camera_id", "timestamp"):
+            value = metadata.get(key)
             if value is None:
-                continue
-            v = value.to(device)
-            if v.dim() == 4:
-                v = v.flatten(2) # (B, V, 4, 4) -> (B, V, 16), one token per view
-            elif v.dim() == 2:
-                v = v.unsqueeze(1) # (B, D) -> (B, 1, D)
-            elif v.dim() != 3:
-                raise ValueError(f"Unsupported metadata shape for key {key}: {v.shape}")
-            
-            # Project each token using per-key projection
-            proj_layer = self.key_projs[key]
-            if proj_layer is None:
-                raise ValueError(f"No projection defined for metadata key: {key}")
-            # Flatten tokens along sequence for linear, then reshape back
-            B, M, D = v.shape
-            v_flat = v.reshape(B * M, D)
-            v_proj = proj_layer(v_flat).reshape(B, M, self.embed_dim)
-            
-            meta_list.append(v_proj)
-            
-        return meta_list
-    
-    def _prepare_metadata_tokens(self, metadata, batch_size, device):
-        """
-            Returns metadata tokens of shape (B, M, C).
-            - If metadata is provided: each key is projected to embed_dim by its own
-            entry in key_projs, so raw metadata widths need not match embed_dim.
-            - If None: use learned tokens repeated over batch.
-        """
-        if metadata is None:
-            return self.learned_meta.expand(batch_size, -1, -1).to(device)  # (B, M, C)
+                per_view.append(torch.zeros(B, frames, self.meta_dim, device=device))
+            else:
+                encoded = sincos1d(value.to(device), self.meta_dim)
+                per_view.append(encoded * self._keep_mask(B, encoded.dim(), device))
 
-        meta_list = self._collect_metadata_tensors(metadata, device)
+        embedding = torch.cat(per_view, dim=-1).unsqueeze(2)  # (B, V, 1, 3 * meta_dim)
+        embedding = embedding.expand(B, frames, patches_per_frame, -1)
 
-        if len(meta_list) == 0:
-            return self.learned_meta.expand(batch_size, -1, -1).to(device)
+        # The rig raymap patch is per-patch rather than per-view, so it is projected
+        # and masked on its own. It is also the rig raymap head's target, which is why
+        # dropout here is load-bearing rather than mere regularization: without it the
+        # head is handed its own answer on every step.
+        rig_raymap = metadata.get("rig_raymap")
+        if rig_raymap is None:
+            rig_slice = torch.zeros(B, frames, patches_per_frame, self.meta_dim, device=device)
+        else:
+            rig_slice = self.rig_proj(rig_raymap.to(device).float())
+            rig_slice = rig_slice * self._keep_mask(B, rig_slice.dim(), device)
 
-        return self.metadata_dropout(torch.cat(meta_list, dim=1))
-    
+        embedding = torch.cat([embedding, rig_slice], dim=-1)
+        return embedding.reshape(B, frames * patches_per_frame, self.embed_dim)
+
     def forward(self, tokens, frames, metadata=None):
         """
             tokens: (B, V * P, C)
             frames: V (int)
-            metadata: Optional dict of per-key tensors, each projected to embed_dim
-                by key_projs (e.g. cam2rig: (B, V, 4, 4))
+            metadata: Optional dict of per-view tensors; see _metadata_embedding
         """
         B, T_total, C = tokens.shape
         assert C == self.embed_dim, f"tokens embed dim {C} != decoder embed_dim {self.embed_dim}"
@@ -159,19 +197,17 @@ class RigAwareTransformerDecoder(nn.Module):
 
         device = tokens.device
 
-        # prepare metadata tokens (B, M, C)
-        meta_tokens = self._prepare_metadata_tokens(metadata, B, device)  # (B, M, C)
-
-        # concatenate metadata tokens in front of patch tokens: (B, M + T_total, C)
-        seq = torch.cat([meta_tokens, tokens], dim=1)
+        # sec 3.3: metadata is added to every patch token rather than attended to as
+        # separate tokens, so each patch carries its own copy through to the heads
+        seq = tokens + self._metadata_embedding(
+            metadata, B, frames, patches_per_frame, device
+        )
 
         # run joint transformer layers
         for layer in self.layers:
             seq = layer(seq)
 
-        # extract processed patch tokens (skip metadata tokens)
-        proc_patches = seq[:, meta_tokens.shape[1]:, :]  # (B, T_total, C)
-        proc_patches = self.final_ln(proc_patches)
+        proc_patches = self.final_ln(seq)  # (B, T_total, C)
 
         # reshape into (B, V, P, C)
         proc_patches = proc_patches.view(B, frames, patches_per_frame, C)

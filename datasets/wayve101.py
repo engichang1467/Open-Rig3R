@@ -10,7 +10,7 @@ from torchvision import transforms
 
 class Wayve101Dataset(Dataset):
     def __init__(self, root_dir, subset='train', n_frames=2, image_size=(384,384),
-                 transforms=None, use_masks=False, metadata_dropout=0.0):
+                 transforms=None, use_masks=False):
         """
         Wayve101 Dataset
 
@@ -21,14 +21,12 @@ class Wayve101Dataset(Dataset):
             image_size (tuple): output image size (H, W).
             transforms: torchvision transforms.
             use_masks (bool): whether to load masks.
-            metadata_dropout (float): dropout for cam2rig metadata.
         """
         self.root_dir = root_dir
         self.n_frames = n_frames
         self.transforms = transforms
         self.image_size = image_size
         self.use_masks = use_masks
-        self.metadata_dropout = metadata_dropout
 
         self.camera_dirs = ['front-forward', 'left-backward', 'left-forward', 'right-backward', 'right-forward']
 
@@ -172,14 +170,22 @@ class Wayve101Dataset(Dataset):
                     cam2rig_list.append(T_cr)
 
         cam2rig = torch.stack(cam2rig_list) # (N, 4, 4)
-        
-        # Apply metadata dropout
-        if self.metadata_dropout > 0:
-            for i in range(cam2rig.shape[0]):
-                if random.random() < self.metadata_dropout:
-                    cam2rig[i] = torch.eye(4)
-        
-        return {'cam2rig': cam2rig}
+
+        # No dropout here on purpose. cam2rig also feeds raymap and pointmap target
+        # construction, so overwriting rows with identity would corrupt ground truth,
+        # not just mask an input. Field dropout lives in the decoder (sec 3.4).
+
+        # images were stacked camera-major here, unlike Waymo, so the camera index
+        # changes slowest. No per-frame timestamps are available, so that slice stays
+        # empty.
+        views = cam2rig.shape[0]
+        frames_per_camera = max(views // len(self.camera_dirs), 1)
+
+        return {
+            'cam2rig': cam2rig,
+            'frame_index': torch.arange(views),
+            'camera_id': torch.arange(views) // frames_per_camera,
+        }
 
     def _load_pointcloud(self, seq_path):
         """

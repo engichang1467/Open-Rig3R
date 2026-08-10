@@ -28,8 +28,7 @@ def smoke_test_co3d():
         subset='train',
         n_frames=4,  # small number for smoke test
         image_size=(128, 128),  # smaller size to save memory
-        transforms=dummy_transforms,
-        metadata_dropout=0.5
+        transforms=dummy_transforms
     )
 
     # --- Wrap in DataLoader ---

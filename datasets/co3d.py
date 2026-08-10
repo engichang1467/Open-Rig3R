@@ -16,15 +16,13 @@ class Co3DDataset(Dataset):
         subset='train', 
         n_frames=24, 
         image_size=(384, 384),
-        transforms=None,
-        metadata_dropout=0.5
+        transforms=None
     ):
         self.root_dir = root_dir
         self.n_frames = n_frames
         self.transforms = transforms
 
         self.image_size = image_size
-        self.metadata_dropout = metadata_dropout
 
         # 1. Load split list
         self.samples = self._load_split(subset)
@@ -88,8 +86,10 @@ class Co3DDataset(Dataset):
         images = torch.stack(images)  # (N, 3, H, W)
 
         # --- Load frame metadata ---
+        # Field dropout is applied to the embedding inside the decoder (sec 3.4), not
+        # here - a masked value has to read as absent, and a substituted placeholder
+        # reads as a specific wrong value instead.
         metadata = self._load_metadata(seq_path, selected_files)
-        metadata = self._maybe_drop_metadata(metadata)
 
         # --- Load pointcloud GT if exists ---
         pointcloud_file = os.path.join(seq_path, 'pointcloud.ply')
@@ -121,19 +121,8 @@ class Co3DDataset(Dataset):
                 else:
                     cam2rigs.append(torch.eye(4))
             metadata['cam2rig'] = torch.stack(cam2rigs)  # (V, 4, 4)
-        return metadata
-    
-    def _maybe_drop_metadata(self, metadata):
-        """Apply metadata dropout for robustness"""
-        if self.metadata_dropout > 0 and metadata:
-            for key in metadata.keys():
-                if random.random() < self.metadata_dropout:
-                    # metadata[key] = None
-                    # Replace with placeholder
-                    if key == 'cam2rig':
-                        metadata[key] = torch.eye(4).unsqueeze(0).repeat(self.n_frames, 1, 1)
-                    elif key == 'camera_id':
-                        metadata[key] = torch.full((self.n_frames,), -1, dtype=torch.long)
-                    elif key == 'timestamp':
-                        metadata[key] = torch.zeros(self.n_frames, dtype=torch.float32)
+
+        # CO3D is one camera orbiting one object: no camera identity to convey and no
+        # rig timestamps to normalize, so both of those slices stay empty.
+        metadata['frame_index'] = torch.arange(len(selected_files))
         return metadata

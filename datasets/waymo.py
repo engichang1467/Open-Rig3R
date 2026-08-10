@@ -142,9 +142,22 @@ class WaymoDataset(Dataset):
             for camera in self.cameras
         ])
 
+        # images were stacked frame-major, so the camera index cycles fastest
+        n_cameras = len(self.cameras)
+        micros = torch.tensor([int(t) for t in timestamps], dtype=torch.float64)
+
         return {
             "images": images,
-            "metadata": {"cam2rig": cam2rig},  # (n_frames * n_cameras, 4, 4)
+            "metadata": {
+                "cam2rig": cam2rig,  # (n_frames * n_cameras, 4, 4)
+                # ponytail: indices start at 0 rather than being sampled from a
+                # larger range as sec 3.3 does; add that once varying rig sizes
+                # are actually trained on
+                "frame_index": torch.arange(n_frames * n_cameras),
+                "camera_id": torch.arange(n_frames * n_cameras) % n_cameras,
+                # seconds since the sample's first capture, per sec 3.3
+                "timestamp": ((micros - micros[0]) / 1e6).float().repeat_interleave(n_cameras),
+            },
             "intrinsics": intrinsics,  # (n_frames * n_cameras, 4)
             "world_from_rig": world_from_rig,  # (n_frames * n_cameras, 4, 4)
             "pointmap": self._pointmap(segment, timestamps),

@@ -17,6 +17,7 @@ class Rig3R(nn.Module):
         num_decoder_layers=6,
         num_heads=8,
         mlp_dim=2048,
+        metadata_dropout=0.5,
         freeze_encoder=True
     ):
         super().__init__()
@@ -36,6 +37,7 @@ class Rig3R(nn.Module):
             num_layers=num_decoder_layers,
             num_heads=num_heads,
             mlp_dim=mlp_dim,
+            metadata_dropout=metadata_dropout,
             img_size=img_size,
             patch_size=patch_size
         )

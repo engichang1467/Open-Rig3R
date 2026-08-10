@@ -1,4 +1,5 @@
 import os
+import random
 import yaml
 import torch
 import argparse
@@ -43,6 +44,14 @@ def load_config(config_path):
 args = parse_args()
 train_cfg = load_config(args.config)
 
+# Without this every run draws a different init and a different shuffle, so two runs
+# of the same config cannot be compared - which is what made the 37a A/B unreadable.
+# DataLoader workers inherit deterministic per-worker seeds from the torch seed.
+seed = train_cfg.get("seed", 0)
+random.seed(seed)
+torch.manual_seed(seed)
+torch.cuda.manual_seed_all(seed)
+
 device = torch.device(train_cfg.get("device", "cuda") if torch.cuda.is_available() else "cpu")
 dataset_type = train_cfg.get("dataset_type", "co3d")
 
@@ -60,8 +69,7 @@ if dataset_type == "co3d":
         subset="train",
         n_frames=train_cfg["n_frames"],
         image_size=img_size,
-        transforms=get_train_transforms(image_size=img_size),
-        metadata_dropout=train_cfg.get("metadata_dropout", 0.5)
+        transforms=get_train_transforms(image_size=img_size)
     )
 
     val_dataset = Co3DDataset(
@@ -69,8 +77,7 @@ if dataset_type == "co3d":
         subset="val",
         n_frames=train_cfg["n_frames"],
         image_size=img_size,
-        transforms=get_val_transforms(image_size=img_size),
-        metadata_dropout=0.0
+        transforms=get_val_transforms(image_size=img_size)
     )
 
 elif dataset_type == "waymo":
@@ -127,7 +134,8 @@ model = Rig3R(
     embed_dim=1024,
     num_decoder_layers=2,
     num_heads=8,
-    mlp_dim=4096
+    mlp_dim=4096,
+    metadata_dropout=train_cfg.get("metadata_dropout", 0.5)
 )
         
 model.to(device)
@@ -229,14 +237,32 @@ def compute_loss(outputs, batch, device, img_size, patch_size):
 # -----------------------------
 # 6. Batch unpacking
 # -----------------------------
-def unpack_batch(batch, device):
-    """Move a collated sample dict onto the device. Same shape for co3d and waymo."""
+def unpack_batch(batch, device, img_size, patch_size, rig_metadata=False):
+    """Move a collated sample dict onto the device. Same shape for co3d and waymo.
+
+    rig_metadata adds the sec 3.3 rig raymap patch r_i to the metadata. It is the
+    same tensor the rig raymap head is scored against, so it is only ever supplied
+    during training, where the decoder's field dropout withholds it half the time.
+    Validation runs without it on purpose: with dropout off, a model handed r_i would
+    score a near-zero rig loss by copying, which measures nothing. Withholding it
+    makes val/loss report what the paper actually claims - rig structure inferred
+    from images.
+    """
     images = batch["images"].to(device)
 
     metadata = batch["metadata"]
     for key, value in metadata.items():
         if value is not None:
             metadata[key] = value.to(device)
+
+    if rig_metadata and "intrinsics" in batch:
+        metadata["rig_raymap"] = build_raymap_targets(
+            cam2rig=metadata["cam2rig"],
+            intrinsics=batch["intrinsics"].to(device),
+            world_from_rig=batch["world_from_rig"].to(device),
+            image_size=img_size,
+            patch_size=patch_size,
+        )["rig_raymap"]
 
     return images, metadata
 
@@ -265,7 +291,9 @@ for epoch in range(num_epochs):
     train_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]", leave=False)
     
     for batch_idx, batch in enumerate(train_bar):
-        images, metadata = unpack_batch(batch, device)
+        images, metadata = unpack_batch(
+            batch, device, img_size, patch_size, rig_metadata=True
+        )
 
         optimizer.zero_grad()
         with autocast(device_type=str(device)):
@@ -295,7 +323,7 @@ for epoch in range(num_epochs):
     val_bar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]", leave=False)
     with torch.no_grad():
         for batch in val_bar:
-            images, metadata = unpack_batch(batch, device)
+            images, metadata = unpack_batch(batch, device, img_size, patch_size)
 
             with autocast(device_type=str(device)):
                 outputs = model(images, metadata)

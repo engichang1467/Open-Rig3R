@@ -169,6 +169,43 @@ def test_zero_prediction_no_longer_matches_rig_target():
     print("Zero prediction no longer satisfies the rig target test passed!")
 
 
+def test_rig_raymap_metadata_matches_the_token_grid():
+    """The r_i tensor train.py builds must line up with the model's patch grid.
+
+    build_raymap_targets derives P from image_size / patch_size while the decoder
+    derives it from the token count, so a mismatch between the two only shows up
+    once both run against the same model.
+    """
+    B, N, H, patch = 2, 2, 64, 8
+    torch.manual_seed(0)
+
+    cam2rig = torch.eye(4).repeat(B, N, 1, 1)
+    cam2rig[:, 1, :3, 3] = LEAK_MOUNT
+    intrinsics = torch.tensor([[[32.0, 32.0, 32.0, 32.0]] * N] * B)
+    world_from_rig = torch.eye(4).repeat(B, N, 1, 1)
+
+    rig_raymap = build_raymap_targets(
+        cam2rig, intrinsics, world_from_rig, (H, H), patch
+    )["rig_raymap"]
+
+    model = Rig3R(
+        encoder_ckpt=None, img_size=H, patch_size=patch, embed_dim=64,
+        num_decoder_layers=1, num_heads=2, mlp_dim=128, metadata_dropout=0.0,
+    ).eval()
+
+    images = torch.randn(B, N, 3, H, H)
+    metadata = {"frame_index": torch.arange(N).expand(B, N), "rig_raymap": rig_raymap}
+
+    with torch.no_grad():
+        outputs = model(images, metadata)
+
+    assert rig_raymap.shape == outputs["rig_raymap"].shape, (
+        f"metadata r_i {tuple(rig_raymap.shape)} != prediction "
+        f"{tuple(outputs['rig_raymap'].shape)}"
+    )
+    print(f"r_i and prediction agree at {tuple(rig_raymap.shape)} test passed!")
+
+
 def test_extrinsics_never_reach_rig_head():
     """No route for cam2rig into the head, positionally or by keyword."""
     params = inspect.signature(RigAwareTransformerDecoder.forward).parameters
@@ -209,5 +246,6 @@ if __name__ == "__main__":
     test_rig3r_forward()
     test_view_fold_matches_per_view_loop()
     test_zero_prediction_no_longer_matches_rig_target()
+    test_rig_raymap_metadata_matches_the_token_grid()
     test_extrinsics_never_reach_rig_head()
     test_normalize_touches_directions_only()
