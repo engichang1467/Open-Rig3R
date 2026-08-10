@@ -121,6 +121,12 @@ class Co3DDataset(Dataset):
                 else:
                     cam2rigs.append(torch.eye(4))
             metadata['cam2rig'] = torch.stack(cam2rigs)  # (V, 4, 4)
+
+        # CO3D is one camera orbiting one object: no camera identity to convey and no
+        # rig timestamps to normalize, so both of those slices stay empty. The frame
+        # index is always included (sec 3.3) and _maybe_drop_metadata has no branch
+        # for it, so it survives dropout untouched.
+        metadata['frame_index'] = torch.arange(len(selected_files))
         return metadata
     
     def _maybe_drop_metadata(self, metadata):

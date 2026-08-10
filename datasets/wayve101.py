@@ -179,7 +179,17 @@ class Wayve101Dataset(Dataset):
                 if random.random() < self.metadata_dropout:
                     cam2rig[i] = torch.eye(4)
         
-        return {'cam2rig': cam2rig}
+        # images were stacked camera-major here, unlike Waymo, so the camera index
+        # changes slowest. No per-frame timestamps are available, so that slice stays
+        # empty.
+        views = cam2rig.shape[0]
+        frames_per_camera = max(views // len(self.camera_dirs), 1)
+
+        return {
+            'cam2rig': cam2rig,
+            'frame_index': torch.arange(views),
+            'camera_id': torch.arange(views) // frames_per_camera,
+        }
 
     def _load_pointcloud(self, seq_path):
         """

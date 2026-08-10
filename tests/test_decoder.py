@@ -23,16 +23,16 @@ decoder = RigAwareTransformerDecoder(
     num_layers=4,
     num_heads=4,
     mlp_dim=C * 4,
-    metadata_tokens=2,
-    metadata_dropout=0.3,
     attn_dropout=0.0,
     img_size=img_size,
     patch_size=patch_size
 )
 
-# dummy metadata: dictionary with cam2rig
+# dummy metadata: the per-view fields of sec 3.3
 metadata = {
-    "cam2rig": torch.eye(4).repeat(B, V, 1, 1)  # (B, V, 4, 4) per-view SE(3)
+    "frame_index": torch.arange(V).expand(B, V),
+    "camera_id": torch.arange(V).expand(B, V) % 2,
+    "timestamp": torch.zeros(B, V),
 }
 
 out = decoder(tokens, frames=V, metadata=metadata)
