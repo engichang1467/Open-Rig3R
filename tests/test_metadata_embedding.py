@@ -27,12 +27,15 @@ def build_decoder(metadata_dropout=0.0):
     ).eval()
 
 
-def full_metadata(B_=B, V_=V):
-    return {
+def full_metadata(B_=B, V_=V, rig=False):
+    metadata = {
         "frame_index": torch.arange(V_).expand(B_, V_),
         "camera_id": torch.arange(V_).expand(B_, V_) % 2,
         "timestamp": torch.linspace(0, 1, V_).expand(B_, V_),
     }
+    if rig:
+        metadata["rig_raymap"] = torch.randn(B_, V_, P, 6)
+    return metadata
 
 
 def slice_of(embedding, field):
@@ -178,6 +181,65 @@ def test_dropped_field_matches_absent_field():
 
     torch.testing.assert_close(dropped, absent)
     print("Dropped reads as absent test passed!")
+
+
+def test_rig_raymap_varies_per_patch():
+    """r_i is a per-patch field; a per-view broadcast would throw its geometry away."""
+    decoder = build_decoder()
+    metadata = full_metadata(rig=True)
+
+    embedding = decoder._metadata_embedding(
+        metadata, B, V, P, torch.device("cpu")
+    ).view(B, V, P, C)
+    rig = slice_of(embedding, "rig_raymap")
+
+    within_patch_spread = (rig - rig.mean(dim=2, keepdim=True)).abs().max()
+    print(f"rig slice spread across patches: {within_patch_spread:.3e}")
+    assert within_patch_spread > 1e-3, "rig raymap collapsed to one value per view"
+
+    # the three per-view fields are constant across patches, by contrast
+    for field in ("frame_index", "camera_id", "timestamp"):
+        chunk = slice_of(embedding, field)
+        torch.testing.assert_close(chunk, chunk[:, :, :1].expand_as(chunk))
+
+    print("Rig raymap varies per patch test passed!")
+
+
+def test_rig_raymap_is_dropped_like_the_other_fields():
+    """The head's own target must be withheld half the time, or it just copies."""
+    torch.manual_seed(0)
+    decoder = build_decoder(metadata_dropout=0.5).train()
+    metadata = full_metadata(B_=64, rig=True)
+
+    dropped = 0
+    trials = 40
+    for _ in range(trials):
+        embedding = decoder._metadata_embedding(
+            metadata, 64, V, P, torch.device("cpu")
+        ).view(64, V, P, C)
+        per_sample = slice_of(embedding, "rig_raymap").abs().amax(dim=(1, 2, 3))
+        dropped += int((per_sample == 0).sum())
+
+    rate = dropped / (trials * 64)
+    print(f"rig_raymap dropped {rate:.3f} of the time")
+    assert 0.4 < rate < 0.6, f"rig raymap dropped at {rate}, expected ~0.5"
+    print("Rig raymap is dropped like the other fields test passed!")
+
+
+def test_rig_raymap_reaches_the_tokens():
+    """A supplied r_i must change the output, or the projection is dead weight."""
+    decoder = build_decoder()
+    tokens = torch.randn(B, V * P, C)
+    metadata = full_metadata(rig=True)
+
+    with torch.no_grad():
+        without = decoder(tokens, frames=V, metadata=full_metadata())["features"]
+        with_rig = decoder(tokens, frames=V, metadata=metadata)["features"]
+
+    delta = (with_rig - without).abs().max()
+    print(f"feature delta from supplying r_i: {delta:.3e}")
+    assert delta > 1e-4, "rig raymap metadata never reached the patch tokens"
+    print("Rig raymap reaches the tokens test passed!")
 
 
 if __name__ == "__main__":

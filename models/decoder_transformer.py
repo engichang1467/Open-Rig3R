@@ -97,6 +97,11 @@ class RigAwareTransformerDecoder(nn.Module):
         )
         self.meta_dim = embed_dim // len(METADATA_FIELDS)
 
+        # sec 3.3: the rig raymap patch r_i in R^6 is linearly projected. The discrete
+        # IDs and the timestamp use parameter-free sine-cosine codes, so this is the
+        # only learned part of the metadata embedding.
+        self.rig_proj = nn.Linear(6, self.meta_dim)
+
         # transformer layers
         self.layers = nn.ModuleList([
             PreNormTransformerBlock(embed_dim, num_heads, mlp_dim, dropout=attn_dropout)
@@ -143,7 +148,7 @@ class RigAwareTransformerDecoder(nn.Module):
                                          synthesised from view order when missing
             camera_id:   (B, V) long
             timestamp:   (B, V) float, seconds
-            rig_raymap:  (B, V, P, 6)  - per-patch, not yet wired in
+            rig_raymap:  (B, V, P, 6)  - per-patch, supplied during training only
         """
         metadata = metadata or {}
 
@@ -165,13 +170,16 @@ class RigAwareTransformerDecoder(nn.Module):
         embedding = torch.cat(per_view, dim=-1).unsqueeze(2)  # (B, V, 1, 3 * meta_dim)
         embedding = embedding.expand(B, frames, patches_per_frame, -1)
 
-        # The rig raymap patch is genuinely per-patch rather than per-view. Wiring it
-        # in is gated on metadata dropout landing first: it is also the rig raymap
-        # head's target, so without masking it hands the answer straight to the head.
-        assert metadata.get("rig_raymap") is None, (
-            "rig raymap metadata needs per-field dropout (#39) before it can be used"
-        )
-        rig_slice = torch.zeros(B, frames, patches_per_frame, self.meta_dim, device=device)
+        # The rig raymap patch is per-patch rather than per-view, so it is projected
+        # and masked on its own. It is also the rig raymap head's target, which is why
+        # dropout here is load-bearing rather than mere regularization: without it the
+        # head is handed its own answer on every step.
+        rig_raymap = metadata.get("rig_raymap")
+        if rig_raymap is None:
+            rig_slice = torch.zeros(B, frames, patches_per_frame, self.meta_dim, device=device)
+        else:
+            rig_slice = self.rig_proj(rig_raymap.to(device).float())
+            rig_slice = rig_slice * self._keep_mask(B, rig_slice.dim(), device)
 
         embedding = torch.cat([embedding, rig_slice], dim=-1)
         return embedding.reshape(B, frames * patches_per_frame, self.embed_dim)

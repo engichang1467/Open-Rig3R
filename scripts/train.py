@@ -237,14 +237,32 @@ def compute_loss(outputs, batch, device, img_size, patch_size):
 # -----------------------------
 # 6. Batch unpacking
 # -----------------------------
-def unpack_batch(batch, device):
-    """Move a collated sample dict onto the device. Same shape for co3d and waymo."""
+def unpack_batch(batch, device, img_size, patch_size, rig_metadata=False):
+    """Move a collated sample dict onto the device. Same shape for co3d and waymo.
+
+    rig_metadata adds the sec 3.3 rig raymap patch r_i to the metadata. It is the
+    same tensor the rig raymap head is scored against, so it is only ever supplied
+    during training, where the decoder's field dropout withholds it half the time.
+    Validation runs without it on purpose: with dropout off, a model handed r_i would
+    score a near-zero rig loss by copying, which measures nothing. Withholding it
+    makes val/loss report what the paper actually claims - rig structure inferred
+    from images.
+    """
     images = batch["images"].to(device)
 
     metadata = batch["metadata"]
     for key, value in metadata.items():
         if value is not None:
             metadata[key] = value.to(device)
+
+    if rig_metadata and "intrinsics" in batch:
+        metadata["rig_raymap"] = build_raymap_targets(
+            cam2rig=metadata["cam2rig"],
+            intrinsics=batch["intrinsics"].to(device),
+            world_from_rig=batch["world_from_rig"].to(device),
+            image_size=img_size,
+            patch_size=patch_size,
+        )["rig_raymap"]
 
     return images, metadata
 
@@ -256,7 +274,7 @@ run = wandb.init(
     project=train_cfg.get("wandb_project", "open-rig3r"),
     entity=train_cfg.get("wandb_entity"),
     name=train_cfg.get("wandb_run_name"),
-    mode=train_cfg.get("wandb_mode", "offline"),  # "offline" / "disabled" for no network
+    mode=train_cfg.get("wandb_mode", "online"),  # "offline" / "disabled" for no network
     config={**train_cfg, "config_file": args.config, "device": str(device)},
     dir="runs",
 )
@@ -273,7 +291,9 @@ for epoch in range(num_epochs):
     train_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]", leave=False)
     
     for batch_idx, batch in enumerate(train_bar):
-        images, metadata = unpack_batch(batch, device)
+        images, metadata = unpack_batch(
+            batch, device, img_size, patch_size, rig_metadata=True
+        )
 
         optimizer.zero_grad()
         with autocast(device_type=str(device)):
@@ -303,7 +323,7 @@ for epoch in range(num_epochs):
     val_bar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]", leave=False)
     with torch.no_grad():
         for batch in val_bar:
-            images, metadata = unpack_batch(batch, device)
+            images, metadata = unpack_batch(batch, device, img_size, patch_size)
 
             with autocast(device_type=str(device)):
                 outputs = model(images, metadata)
