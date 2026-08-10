@@ -88,7 +88,29 @@ def test_direction_term_ignores_the_centre():
     print("Direction term ignores the centre channels test passed!")
 
 
+def test_half_precision_predictions_backward():
+    """Under autocast the model emits half, targets stay fp32.
+
+    F.mse_loss refuses that pair, so the camera-centre branches blew up the moment
+    they stopped being dead code.
+    """
+    torch.manual_seed(0)
+    preds, gts = sample_batch()
+    preds = {k: v.half().requires_grad_() for k, v in preds.items()}
+
+    total, _ = MultiTaskLoss()(preds, gts)
+    total.backward()
+
+    assert total.dtype == torch.float32, f"loss should reduce in fp32, got {total.dtype}"
+    for key, value in preds.items():
+        assert value.grad is not None, f"{key} got no gradient"
+        assert value.grad.dtype == torch.float16, f"{key} grad is {value.grad.dtype}"
+
+    print(f"half predictions -> fp32 loss {total.item():.4f}, half grads test passed!")
+
+
 if __name__ == "__main__":
     test_loss_smoke()
+    test_half_precision_predictions_backward()
     test_camera_center_terms_contribute()
     test_direction_term_ignores_the_centre()

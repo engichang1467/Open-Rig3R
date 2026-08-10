@@ -25,6 +25,13 @@ class MultiTaskLoss(nn.Module):
 
         loss_dict = {}
 
+        # Predictions arrive in whatever dtype autocast produced, targets are always
+        # fp32. F.mse_loss rejects a half/float pair outright ("Found dtype Float but
+        # expected Half"), and loss reductions are safer accumulated at full precision
+        # anyway, so score everything in fp32. Casting back is differentiable.
+        preds = {k: v.float() if torch.is_tensor(v) else v for k, v in preds.items()}
+        gts = {k: v.float() if torch.is_tensor(v) else v for k, v in gts.items()}
+
         # ==========================================================
         # 1. Confidence‑weighted Pointmap loss (L2)
         # gts must include: 'pointmap' and 'pointmap_conf'

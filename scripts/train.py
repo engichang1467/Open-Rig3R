@@ -23,6 +23,7 @@ from datasets.transform import get_train_transforms, get_val_transforms
 # --- Import model ---
 from models.rig3r import Rig3R
 from models.losses import MultiTaskLoss
+from utils.amp import needs_grad_scaler, select_amp_dtype
 from utils.raymap import build_pointmap_target, build_raymap_targets
 
 # --- Optional: logging ---
@@ -147,6 +148,13 @@ model.to(device)
 optimizer = optim.AdamW(model.parameters(),
                         lr=float(train_cfg["optimizer"]["lr"]),
                         weight_decay=train_cfg["optimizer"].get("weight_decay", 0.01))
+
+# autocast defaults to fp16 on CUDA, which underflows small gradients to zero unless
+# a scaler compensates. bf16 has fp32's exponent range and needs no scaler; the scaler
+# below is a no-op except on the pre-Ampere cards that fall back to fp16.
+amp_dtype = select_amp_dtype(device, train_cfg.get("amp_dtype"))
+scaler = torch.amp.GradScaler(device.type, enabled=needs_grad_scaler(amp_dtype))
+print(f"AMP: {amp_dtype} on {device.type}, grad scaler {'on' if scaler.is_enabled() else 'off'}")
 
 scheduler = CosineAnnealingLR(optimizer,
                               T_max=train_cfg["scheduler"]["T_max"],
@@ -275,7 +283,8 @@ run = wandb.init(
     entity=train_cfg.get("wandb_entity"),
     name=train_cfg.get("wandb_run_name"),
     mode=train_cfg.get("wandb_mode", "online"),  # "offline" / "disabled" for no network
-    config={**train_cfg, "config_file": args.config, "device": str(device)},
+    config={**train_cfg, "config_file": args.config, "device": str(device),
+            "amp_dtype": str(amp_dtype), "grad_scaler": scaler.is_enabled()},
     dir="runs",
 )
 
@@ -296,12 +305,13 @@ for epoch in range(num_epochs):
         )
 
         optimizer.zero_grad()
-        with autocast(device_type=str(device)):
+        with autocast(device_type=device.type, dtype=amp_dtype):
             outputs = model(images, metadata)
         loss, loss_dict = compute_loss(outputs, batch, device, img_size, patch_size)
 
-        loss.backward()
-        optimizer.step()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         running_loss += loss.item()
         train_bar.set_postfix({"loss": f"{loss.item():.4f}"})
@@ -325,7 +335,7 @@ for epoch in range(num_epochs):
         for batch in val_bar:
             images, metadata = unpack_batch(batch, device, img_size, patch_size)
 
-            with autocast(device_type=str(device)):
+            with autocast(device_type=device.type, dtype=amp_dtype):
                 outputs = model(images, metadata)
             loss, _ = compute_loss(outputs, batch, device, img_size, patch_size)
 
