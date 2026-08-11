@@ -5,13 +5,23 @@ import torch.nn.functional as F
 
 class MultiTaskLoss(nn.Module):
     """
-        Combines pointmap, pose-raymap, and rig-raymap losses with fixed scalar weights.
+        Rig3R Eq. 5: L_total = L_pmap + lambda_p * L_p_rmap + lambda_r * L_r_rmap
+
+        Eq. 3  L_pmap = sum_{i in D_v} C_i * ||X_i - X_bar_i / z_bar|| - alpha log C_i
+        Eq. 4  L_rmap = sum_hw ||r - r_bar|| + beta * ||c - c_bar / z_bar||
+
+        Both equations use an unsquared Euclidean norm, and both expect ground truth
+        already divided by z_bar - see utils.raymap.scene_scale. C is the model's own
+        predicted confidence, not a validity mask.
     """
-    def __init__(self, w_point=1.0, w_pose=1.0, w_rig=1.0, reduction='mean'):
+    def __init__(self, w_point=1.0, w_pose=1.0, w_rig=1.0, alpha=0.2, beta=1.0,
+                 reduction='mean'):
         super().__init__()
         self.w_point = w_point
         self.w_pose = w_pose
         self.w_rig = w_rig
+        self.alpha = alpha  # Eq. 3 confidence regularizer; paper gives no value
+        self.beta = beta    # Eq. 4 camera centre weight; paper gives no value
         self.reduction = reduction
 
     def forward(self, preds, gts):
@@ -37,16 +47,22 @@ class MultiTaskLoss(nn.Module):
         # gts must include: 'pointmap' and 'pointmap_conf'
         # ==========================================================
         if 'pointmap' in preds and 'pointmap' in gts:
-            point_pred = preds['pointmap']
-            point_gt = gts['pointmap']
-            if 'pointmap_conf' in gts:
-                conf = gts['pointmap_conf'] # shape (B, V, P) or (B, V, P, 1)
-                if conf.dim() == 3:
-                    conf = conf.unsqueeze(-1)
-                loss_point = conf * (point_pred - point_gt) ** 2
-                loss_point = self._reduce(loss_point)
+            # Eq. 3 is a norm, not a squared error
+            error = (preds['pointmap'] - gts['pointmap']).norm(dim=-1)  # (B, V, P)
+
+            conf = preds.get('pointmap_conf')
+            if conf is not None:
+                # C is the model's own confidence, so it can downweight what it cannot
+                # see. -alpha*log(C) is what stops it driving C to zero to escape the
+                # loss entirely.
+                conf = conf.squeeze(-1) if conf.dim() == error.dim() + 1 else conf
+                term = conf * error - self.alpha * conf.log()
             else:
-                loss_point = F.mse_loss(point_pred, point_gt, reduction=self.reduction)
+                term = error
+
+            # gts['pointmap_conf'] is the lidar validity fraction: the set D_v Eq. 3
+            # sums over, not a weight. Patches with no return supervise nothing.
+            loss_point = self._reduce_masked(term, gts.get('pointmap_conf'))
             loss_dict['pointmap'] = loss_point
         else:
             loss_point = 0.0
@@ -56,23 +72,7 @@ class MultiTaskLoss(nn.Module):
         # 2. Pose raymap loss = direction loss + camera center loss
         # ==========================================================
         if 'pose_raymap' in preds and 'pose_raymap' in gts:
-            # ---- Direction loss (cosine) ----
-            # channels 0:3 are the shared camera center, scored by its own term below;
-            # including them here would double-count it
-            dir_pred = preds['pose_raymap'][..., 3:]
-            dir_gt = gts['pose_raymap'][..., 3:]
-            loss_dir_pose = 1.0 - F.cosine_similarity(dir_pred, dir_gt, dim=-1)
-            loss_dir_pose = self._reduce(loss_dir_pose)
-
-            # ---- Camera center loss (L2) ----
-            if 'camera_center_pose' in preds and 'camera_center_pose' in gts:
-                cc_pred = preds['camera_center_pose']
-                cc_gt = gts['camera_center_pose']
-                loss_cc_pose = F.mse_loss(cc_pred, cc_gt, reduction=self.reduction)
-            else:
-                loss_cc_pose = 0.0
-
-            loss_pose = loss_dir_pose + loss_cc_pose
+            loss_pose = self._raymap_loss(preds, gts, 'pose_raymap', 'camera_center_pose')
             loss_dict['pose_raymap'] = loss_pose
         else:
             loss_pose = 0.0
@@ -82,22 +82,7 @@ class MultiTaskLoss(nn.Module):
         # 3. Rig raymap loss = direction loss + camera center loss
         # ==========================================================
         if 'rig_raymap' in preds and 'rig_raymap' in gts:
-            # ---- Direction loss ----
-            dir_pred = preds['rig_raymap'][..., 3:]
-            dir_gt = gts['rig_raymap'][..., 3:]
-            loss_dir_rig = 1.0 - F.cosine_similarity(dir_pred, dir_gt, dim=-1)
-            loss_dir_rig = self._reduce(loss_dir_rig)
-
-
-            # ---- Camera center loss ----
-            if 'camera_center_rig' in preds and 'camera_center_rig' in gts:
-                cc_pred = preds['camera_center_rig']
-                cc_gt = gts['camera_center_rig']
-                loss_cc_rig = F.mse_loss(cc_pred, cc_gt, reduction=self.reduction)
-            else:
-                loss_cc_rig = 0.0
-
-            loss_rig = loss_dir_rig + loss_cc_rig
+            loss_rig = self._raymap_loss(preds, gts, 'rig_raymap', 'camera_center_rig')
             loss_dict['rig_raymap'] = loss_rig
         else:
             loss_rig = 0.0
@@ -111,6 +96,36 @@ class MultiTaskLoss(nn.Module):
         loss_dict['total'] = total
         return total, loss_dict
     
+    def _raymap_loss(self, preds, gts, raymap_key, center_key):
+        """Eq. 4: ||r - r_bar|| over patches, plus beta * ||c - c_bar / z_bar||.
+
+        Channels 0:3 of the raymap are the shared camera centre, scored by the centre
+        term; including them in the direction term would count them twice. The norm
+        rather than a cosine is deliberate - for unit vectors ||r - r_bar|| is
+        sqrt(2 - 2cos), whose gradient stays linear near the optimum where cosine's
+        goes quadratic and fades out.
+        """
+        direction = (preds[raymap_key][..., 3:] - gts[raymap_key][..., 3:]).norm(dim=-1)
+        loss = self._reduce(direction)
+
+        if center_key in preds and center_key in gts:
+            center = (preds[center_key] - gts[center_key]).norm(dim=-1)
+            loss = loss + self.beta * self._reduce(center)
+
+        return loss
+
+    def _reduce_masked(self, loss, mask):
+        """Reduce over the valid entries only, so empty patches supervise nothing."""
+        if mask is None:
+            return self._reduce(loss)
+
+        mask = mask.squeeze(-1) if mask.dim() == loss.dim() + 1 else mask
+        valid = mask > 0
+        if not valid.any():
+            return loss.sum() * 0.0  # keeps the graph connected with nothing to learn
+
+        return loss[valid].sum() if self.reduction == 'sum' else loss[valid].mean()
+
     def _reduce(self, loss):
         if self.reduction == 'mean':
             return loss.mean()

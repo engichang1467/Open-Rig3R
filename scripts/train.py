@@ -24,7 +24,7 @@ from datasets.transform import get_train_transforms, get_val_transforms
 from models.rig3r import Rig3R
 from models.losses import MultiTaskLoss
 from utils.amp import needs_grad_scaler, select_amp_dtype
-from utils.raymap import build_pointmap_target, build_raymap_targets
+from utils.raymap import build_pointmap_target, build_raymap_targets, scene_scale
 
 # --- Optional: logging ---
 import wandb
@@ -163,13 +163,16 @@ scheduler = CosineAnnealingLR(optimizer,
 # -----------------------------
 # 5. Loss function
 # -----------------------------
-# the pointmap term is a metric MSE in metres and runs an order of magnitude above
-# the two raymap terms, which are cosine-based and bounded by 2 - hence the weights
+# Every term is scale-free now that the ground truth is divided by the average scene
+# depth (Eq. 3, Eq. 4), so these weights finally compare like with like. The paper gives
+# no value for alpha or beta.
 loss_cfg = train_cfg.get("loss", {})
 criterion = MultiTaskLoss(
     w_point=loss_cfg.get("w_point", 1.0),
     w_pose=loss_cfg.get("w_pose", 1.0),
     w_rig=loss_cfg.get("w_rig", 1.0),
+    alpha=loss_cfg.get("alpha", 0.2),
+    beta=loss_cfg.get("beta", 1.0),
 )
 
 
@@ -192,12 +195,16 @@ def downsample_pointmap(pointmap, img_size, patch_size):
     return pooled.permute(0, 2, 3, 1).reshape(B, V, patch_grid * patch_grid, C)
 
 
-def compute_loss(outputs, batch, device, img_size, patch_size):
+def compute_loss(outputs, batch, device, img_size, patch_size, z_bar):
     """Score whatever supervision this batch actually carries.
 
     Waymo currently supplies raymap targets (from calibration + rig poses) but no
     pointcloud; CO3D supplies a pointcloud but no calibration. MultiTaskLoss skips
     any term missing from either side, so each dataset trains on what it has.
+
+    z_bar is (B,) average scene depth. Every target is divided by the same value, so
+    the pointmap and the two camera centres stay on one consistent scale - computing
+    it separately per target would let them disagree.
     """
     preds = dict(outputs)
     targets = {}
@@ -205,18 +212,29 @@ def compute_loss(outputs, batch, device, img_size, patch_size):
     pointcloud = batch["pointcloud"].to(device)
     pointmap = batch.get("pointmap", torch.empty(0)).to(device)
 
+    if pointcloud.numel() > 0 or pointmap.numel() > 0:
+        # the heads predict at image resolution, the targets live on the patch grid
+        preds["pointmap"] = downsample_pointmap(preds["pointmap"], img_size[0], patch_size)
+        if "pointmap_conf" in preds:
+            preds["pointmap_conf"] = downsample_pointmap(
+                preds["pointmap_conf"], img_size[0], patch_size
+            )
+
     if pointcloud.numel() > 0:
-        preds["pointmap"] = downsample_pointmap(preds["pointmap"], img_size[0], patch_size)
-        targets["pointmap"] = pointcloud
+        targets["pointmap"] = pointcloud / z_bar.view(-1, 1, 1)
     elif pointmap.numel() > 0:
-        preds["pointmap"] = downsample_pointmap(preds["pointmap"], img_size[0], patch_size)
-        targets["pointmap"], targets["pointmap_conf"] = build_pointmap_target(
+        points, valid = build_pointmap_target(
             pointmap=pointmap,
             cam2rig=batch["metadata"]["cam2rig"].to(device),
             world_from_rig=batch["world_from_rig"].to(device),
             patch_size=patch_size,
             image_size=img_size,
         )
+        # Eq. 3 normalizes only the ground truth, so the model learns to predict at
+        # normalized scale. `valid` is the lidar coverage fraction, used as the mask
+        # D_v rather than as a weight.
+        targets["pointmap"] = points / z_bar.view(-1, 1, 1, 1)
+        targets["pointmap_conf"] = valid
 
     if "intrinsics" in batch:
         targets.update(build_raymap_targets(
@@ -225,6 +243,7 @@ def compute_loss(outputs, batch, device, img_size, patch_size):
             world_from_rig=batch["world_from_rig"].to(device),
             image_size=img_size,
             patch_size=patch_size,
+            z_bar=z_bar,
         ))
 
     total, loss_dict = criterion(preds, targets)
@@ -263,6 +282,13 @@ def unpack_batch(batch, device, img_size, patch_size, rig_metadata=False):
         if value is not None:
             metadata[key] = value.to(device)
 
+    # z_bar comes from the raw ground truth, before any target construction, so the
+    # same value can normalize the pointmap target, both camera centres, and the rig
+    # raymap fed back in as metadata.
+    pointmap = batch.get("pointmap", torch.empty(0)).to(device)
+    source = pointmap if pointmap.numel() > 0 else batch["pointcloud"].to(device)
+    z_bar = scene_scale(source)
+
     if rig_metadata and "intrinsics" in batch:
         metadata["rig_raymap"] = build_raymap_targets(
             cam2rig=metadata["cam2rig"],
@@ -270,9 +296,10 @@ def unpack_batch(batch, device, img_size, patch_size, rig_metadata=False):
             world_from_rig=batch["world_from_rig"].to(device),
             image_size=img_size,
             patch_size=patch_size,
+            z_bar=z_bar,
         )["rig_raymap"]
 
-    return images, metadata
+    return images, metadata, z_bar
 
 
 # -----------------------------
@@ -300,14 +327,14 @@ for epoch in range(num_epochs):
     train_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]", leave=False)
     
     for batch_idx, batch in enumerate(train_bar):
-        images, metadata = unpack_batch(
+        images, metadata, z_bar = unpack_batch(
             batch, device, img_size, patch_size, rig_metadata=True
         )
 
         optimizer.zero_grad()
         with autocast(device_type=device.type, dtype=amp_dtype):
             outputs = model(images, metadata)
-        loss, loss_dict = compute_loss(outputs, batch, device, img_size, patch_size)
+        loss, loss_dict = compute_loss(outputs, batch, device, img_size, patch_size, z_bar)
 
         scaler.scale(loss).backward()
         scaler.step(optimizer)
@@ -333,11 +360,11 @@ for epoch in range(num_epochs):
     val_bar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]", leave=False)
     with torch.no_grad():
         for batch in val_bar:
-            images, metadata = unpack_batch(batch, device, img_size, patch_size)
+            images, metadata, z_bar = unpack_batch(batch, device, img_size, patch_size)
 
             with autocast(device_type=device.type, dtype=amp_dtype):
                 outputs = model(images, metadata)
-            loss, _ = compute_loss(outputs, batch, device, img_size, patch_size)
+            loss, _ = compute_loss(outputs, batch, device, img_size, patch_size, z_bar)
 
             val_loss += loss.item()
             val_bar.set_postfix({"val_loss": f"{loss.item():.4f}"})

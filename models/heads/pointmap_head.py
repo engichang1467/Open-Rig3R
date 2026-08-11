@@ -119,4 +119,10 @@ class PointMapHead(nn.Module):
         confidence = confidence.permute(0, 2, 3, 1)  # (B*V, H, W, 1)
         confidence = confidence.reshape(BV, H * W, 1)  # (B*V, H*W, 1)
 
+        # Eq. 3 weights the error by C and regularizes with -alpha*log(C), so C has to
+        # be positive. Following DUSt3R, keep it above 1 so log(C) >= 0 and the
+        # regularizer can only ever reward confidence, never pay the model to shrink it.
+        # softplus rather than exp: same shape, no overflow on large logits.
+        confidence = 1.0 + F.softplus(confidence)
+
         return pointmap, confidence

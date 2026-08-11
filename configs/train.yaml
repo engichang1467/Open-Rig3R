@@ -12,12 +12,14 @@ n_frames: 24  # consecutive timestamps per sample; views = n_frames * num_camera
 image_size: [128, 128]
 patch_size: 16  # fixed by the DUSt3R ViT-L/16 encoder; also sets the raymap target resolution
 
-# Loss weights. The pointmap term is a metric MSE in metres (tens), the two raymap
-# terms are cosine-based (bounded by 2), so leaving these equal lets depth dominate.
+# Loss weights. Every term is scale-free now that the ground truth is divided by the
+# average scene depth (Eq. 3, Eq. 4), so these compare like with like.
 loss:
   w_point: 1.0
   w_pose: 1.0
   w_rig: 1.0
+  alpha: 0.2  # Eq. 3 confidence regularizer. Not given in the paper; DUSt3R's value.
+  beta: 1.0   # Eq. 4 camera-centre weight. Not given in the paper.
 
 # Optimizer configuration
 optimizer:
