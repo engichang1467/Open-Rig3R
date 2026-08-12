@@ -80,7 +80,28 @@ def build_pointmap_target(pointmap, cam2rig, world_from_rig, patch_size, image_s
     return points * (confidence > 0).unsqueeze(-1), confidence
 
 
-def build_raymap_targets(cam2rig, intrinsics, world_from_rig, image_size, patch_size):
+def scene_scale(points, eps=1e-6):
+    """Average scene depth z-bar, per sample. (B,)
+
+    Eq. 3 and Eq. 4 divide the ground truth by z-bar so the model learns geometry at a
+    scale-invariant magnitude - indoor rooms and driving scenes land in the same
+    numerical range. The paper says only "the average scene depth"; following DUSt3R
+    this is the mean distance from the camera to its valid points, so it is a depth in
+    the camera's own frame rather than a distance in some reference view.
+
+    Args:
+        points: (B, ..., 3) ground-truth points in camera frame, NaN where invalid
+    """
+    flat = points.reshape(points.shape[0], -1, 3)
+    distances = flat.norm(dim=-1)
+
+    valid = torch.isfinite(distances) & (distances > 0)
+    total = torch.where(valid, distances, torch.zeros_like(distances)).sum(dim=-1)
+    return (total / valid.sum(dim=-1).clamp(min=1)).clamp(min=eps)
+
+
+def build_raymap_targets(cam2rig, intrinsics, world_from_rig, image_size, patch_size,
+                         z_bar=None):
     """Targets for the rig and pose raymap heads.
 
     Args:
@@ -89,6 +110,9 @@ def build_raymap_targets(cam2rig, intrinsics, world_from_rig, image_size, patch_
         world_from_rig: (B, V, 4, 4) world_from_vehicle at each view's timestamp
         image_size:     (H, W)
         patch_size:     model patch size
+        z_bar:          (B,) average scene depth. Eq. 4 normalizes the camera centre
+                        by it; pass the same value used for the pointmap target or the
+                        two supervisions disagree about scale.
     Returns:
         {"rig_raymap":  (B, V, P, 6), "camera_center_rig":  (B, V, 3),
          "pose_raymap": (B, V, P, 6), "camera_center_pose": (B, V, 3)}
@@ -110,6 +134,13 @@ def build_raymap_targets(cam2rig, intrinsics, world_from_rig, image_size, patch_
     pose_center = transform[..., :3, 3]
     pose_directions = torch.einsum("bvij,bvpj->bvpi", transform[..., :3, :3], directions)
     pose_directions = torch.nn.functional.normalize(pose_directions, dim=-1)
+
+    # Eq. 4 normalizes only the ground-truth centre; the directions are unit vectors
+    # already and carry no scale to remove.
+    if z_bar is not None:
+        scale = z_bar.view(-1, 1, 1)
+        rig_center = rig_center / scale
+        pose_center = pose_center / scale
 
     return {
         "rig_raymap": _raymap(rig_center, rig_directions),

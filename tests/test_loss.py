@@ -109,8 +109,110 @@ def test_half_precision_predictions_backward():
     print(f"half predictions -> fp32 loss {total.item():.4f}, half grads test passed!")
 
 
+def test_direction_term_is_the_ray_norm_not_cosine():
+    """Eq. 4 uses ||r - r_bar||. For unit vectors that is sqrt(2 - 2cos).
+
+    The distinction matters near the optimum: 1-cos falls off quadratically and its
+    gradient fades, the norm stays linear.
+    """
+    torch.manual_seed(0)
+    directions = torch.nn.functional.normalize(torch.randn(1, 1, 4, 3), dim=-1)
+    perturbed = torch.nn.functional.normalize(directions + 0.3 * torch.randn(1, 1, 4, 3), dim=-1)
+    center = torch.zeros(1, 1, 3)
+
+    preds = {'rig_raymap': raymap(center, perturbed), 'camera_center_rig': center}
+    gts = {'rig_raymap': raymap(center, directions), 'camera_center_rig': center}
+
+    _, loss_dict = MultiTaskLoss(beta=0.0)(preds, gts)
+
+    cosine = torch.nn.functional.cosine_similarity(perturbed, directions, dim=-1)
+    expected = (2 - 2 * cosine).clamp(min=0).sqrt().mean()
+    torch.testing.assert_close(loss_dict['rig_raymap'], expected)
+
+    cosine_loss = (1 - cosine).mean()
+    print(f"ray norm {expected:.4f} vs cosine distance {cosine_loss:.4f} test passed!")
+
+
+def test_matching_directions_score_zero():
+    center = torch.zeros(1, 1, 3)
+    directions = torch.nn.functional.normalize(torch.randn(1, 1, 4, 3), dim=-1)
+    same = {'rig_raymap': raymap(center, directions), 'camera_center_rig': center}
+
+    _, loss_dict = MultiTaskLoss()(dict(same), same)
+    torch.testing.assert_close(loss_dict['rig_raymap'], torch.tensor(0.0))
+    print("A perfect raymap scores zero test passed!")
+
+
+def test_confidence_regularizer_punishes_giving_up():
+    """-alpha*log(C) is what stops the model zeroing its confidence to escape Eq. 3."""
+    torch.manual_seed(0)
+    point_pred = torch.randn(1, 1, 8, 3)
+    gts = {'pointmap': point_pred + 0.5, 'pointmap_conf': torch.ones(1, 1, 8)}
+
+    criterion = MultiTaskLoss(alpha=0.2)
+    losses = {}
+    for name, value in (("giving up", 1.0), ("confident", 8.0)):
+        preds = {'pointmap': point_pred, 'pointmap_conf': torch.full((1, 1, 8, 1), value)}
+        _, loss_dict = criterion(preds, gts)
+        losses[name] = loss_dict['pointmap']
+        print(f"C={value}: pointmap loss {losses[name]:.4f}")
+
+    # with a real error present, high confidence should cost more, not less
+    assert losses["confident"] > losses["giving up"], "confidence is not weighting the error"
+
+    # and without the regularizer nothing stops C collapsing
+    no_reg = MultiTaskLoss(alpha=0.0)
+    tiny = {'pointmap': point_pred, 'pointmap_conf': torch.full((1, 1, 8, 1), 1e-4)}
+    _, unregularized = no_reg(tiny, gts)
+    _, regularized = criterion(tiny, gts)
+    assert regularized['pointmap'] > unregularized['pointmap'], (
+        "alpha must penalise vanishing confidence"
+    )
+    print("Confidence regularizer punishes giving up test passed!")
+
+
+def test_confidence_comes_from_the_prediction():
+    """Eq. 3's C is the model's own output, not the lidar validity mask."""
+    torch.manual_seed(0)
+    point_pred = torch.randn(1, 1, 8, 3)
+    gts = {'pointmap': point_pred + 0.5, 'pointmap_conf': torch.ones(1, 1, 8)}
+    criterion = MultiTaskLoss()
+
+    base = {'pointmap': point_pred, 'pointmap_conf': torch.full((1, 1, 8, 1), 2.0)}
+    moved = {'pointmap': point_pred, 'pointmap_conf': torch.full((1, 1, 8, 1), 4.0)}
+
+    _, a = criterion(base, gts)
+    _, b = criterion(moved, gts)
+    assert not torch.isclose(a['pointmap'], b['pointmap']), (
+        "predicted confidence does not affect the loss - still reading the GT mask"
+    )
+    print("Predicted confidence drives the pointmap term test passed!")
+
+
+def test_invalid_patches_supervise_nothing():
+    """D_v in Eq. 3 is the valid set; patches with no lidar return are excluded."""
+    torch.manual_seed(0)
+    point_pred = torch.randn(1, 1, 4, 3)
+    conf = torch.ones(1, 1, 4, 1)
+
+    gt = point_pred.clone()
+    gt[0, 0, 3] += 100.0  # a wild error, but in a patch with no coverage
+
+    mask = torch.tensor([[[1.0, 1.0, 1.0, 0.0]]])
+    preds = {'pointmap': point_pred, 'pointmap_conf': conf}
+    _, loss_dict = MultiTaskLoss(alpha=0.0)({**preds}, {'pointmap': gt, 'pointmap_conf': mask})
+
+    torch.testing.assert_close(loss_dict['pointmap'], torch.tensor(0.0))
+    print("Masked-out patches contribute nothing test passed!")
+
+
 if __name__ == "__main__":
     test_loss_smoke()
     test_half_precision_predictions_backward()
+    test_direction_term_is_the_ray_norm_not_cosine()
+    test_matching_directions_score_zero()
+    test_confidence_regularizer_punishes_giving_up()
+    test_confidence_comes_from_the_prediction()
+    test_invalid_patches_supervise_nothing()
     test_camera_center_terms_contribute()
     test_direction_term_ignores_the_centre()
