@@ -72,7 +72,9 @@ class MultiTaskLoss(nn.Module):
         # 2. Pose raymap loss = direction loss + camera center loss
         # ==========================================================
         if 'pose_raymap' in preds and 'pose_raymap' in gts:
-            loss_pose = self._raymap_loss(preds, gts, 'pose_raymap', 'camera_center_pose')
+            loss_pose = self._raymap_loss(
+                preds, gts, 'pose_raymap', 'camera_center_pose', 'pose', loss_dict
+            )
             loss_dict['pose_raymap'] = loss_pose
         else:
             loss_pose = 0.0
@@ -82,7 +84,9 @@ class MultiTaskLoss(nn.Module):
         # 3. Rig raymap loss = direction loss + camera center loss
         # ==========================================================
         if 'rig_raymap' in preds and 'rig_raymap' in gts:
-            loss_rig = self._raymap_loss(preds, gts, 'rig_raymap', 'camera_center_rig')
+            loss_rig = self._raymap_loss(
+                preds, gts, 'rig_raymap', 'camera_center_rig', 'rig', loss_dict
+            )
             loss_dict['rig_raymap'] = loss_rig
         else:
             loss_rig = 0.0
@@ -96,7 +100,7 @@ class MultiTaskLoss(nn.Module):
         loss_dict['total'] = total
         return total, loss_dict
     
-    def _raymap_loss(self, preds, gts, raymap_key, center_key):
+    def _raymap_loss(self, preds, gts, raymap_key, center_key, name, loss_dict):
         """Eq. 4: ||r - r_bar|| over patches, plus beta * ||c - c_bar / z_bar||.
 
         Channels 0:3 of the raymap are the shared camera centre, scored by the centre
@@ -104,13 +108,19 @@ class MultiTaskLoss(nn.Module):
         rather than a cosine is deliberate - for unit vectors ||r - r_bar|| is
         sqrt(2 - 2cos), whose gradient stays linear near the optimum where cosine's
         goes quadratic and fades out.
+
+        The two halves are reported separately in loss_dict: bundled into one number
+        they cannot be compared across a change to either term, because the direction
+        and centre parts move on completely different scales.
         """
         direction = (preds[raymap_key][..., 3:] - gts[raymap_key][..., 3:]).norm(dim=-1)
         loss = self._reduce(direction)
+        loss_dict[f'{name}_dir'] = loss
 
         if center_key in preds and center_key in gts:
-            center = (preds[center_key] - gts[center_key]).norm(dim=-1)
-            loss = loss + self.beta * self._reduce(center)
+            center = self._reduce((preds[center_key] - gts[center_key]).norm(dim=-1))
+            loss_dict[f'{name}_center'] = center
+            loss = loss + self.beta * center
 
         return loss
 

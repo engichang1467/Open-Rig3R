@@ -24,6 +24,7 @@ from datasets.transform import get_train_transforms, get_val_transforms
 from models.rig3r import Rig3R
 from models.losses import MultiTaskLoss
 from utils.amp import needs_grad_scaler, select_amp_dtype
+from utils.metrics import raymap_metrics
 from utils.raymap import build_pointmap_target, build_raymap_targets, scene_scale
 
 # --- Optional: logging ---
@@ -248,6 +249,10 @@ def compute_loss(outputs, batch, device, img_size, patch_size, z_bar):
 
     total, loss_dict = criterion(preds, targets)
 
+    # Geometric metrics, not loss terms: degrees are degrees whatever the objective is,
+    # so these stay comparable across a change to the loss itself.
+    loss_dict.update(raymap_metrics(preds, targets))
+
     # with no matching target MultiTaskLoss returns a plain 0.0 float and the
     # optimizer becomes a no-op - the exact failure this pipeline shipped with.
     # grad_fn is only expected under grad; validation runs inside no_grad.
@@ -357,6 +362,7 @@ for epoch in range(num_epochs):
     # -----------------------------
     model.eval()
     val_loss = 0.0
+    val_totals = {}
     val_bar = tqdm(val_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Val]", leave=False)
     with torch.no_grad():
         for batch in val_bar:
@@ -364,13 +370,20 @@ for epoch in range(num_epochs):
 
             with autocast(device_type=device.type, dtype=amp_dtype):
                 outputs = model(images, metadata)
-            loss, _ = compute_loss(outputs, batch, device, img_size, patch_size, z_bar)
+            loss, val_dict = compute_loss(outputs, batch, device, img_size, patch_size, z_bar)
 
             val_loss += loss.item()
+            for name, value in val_dict.items():
+                val_totals[name] = val_totals.get(name, 0.0) + float(value)
             val_bar.set_postfix({"val_loss": f"{loss.item():.4f}"})
 
-    avg_val_loss = val_loss / len(val_loader)
-    print(f"Epoch [{epoch+1}/{num_epochs}] - Val Loss: {avg_val_loss:.4f}")
+    batches = len(val_loader)
+    avg_val_loss = val_loss / batches
+    val_averages = {name: total / batches for name, total in val_totals.items()}
+    degrees = " ".join(
+        f"{name} {value:.2f}deg" for name, value in val_averages.items() if name.endswith("_deg")
+    )
+    print(f"Epoch [{epoch+1}/{num_epochs}] - Val Loss: {avg_val_loss:.4f}  {degrees}")
 
     wandb.log(
         {
@@ -378,6 +391,7 @@ for epoch in range(num_epochs):
             "train/loss": avg_loss,
             "val/loss": avg_val_loss,
             "lr": scheduler.get_last_lr()[0],
+            **{f"val/{name}": value for name, value in val_averages.items()},
         },
         step=global_step,
     )
