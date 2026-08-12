@@ -8,7 +8,14 @@ import torch
 root_path = Path(__file__).parent.parent
 sys.path.append(str(root_path))
 
-from utils.metrics import ray_angular_error, raymap_metrics
+from utils.metrics import (
+    align_scale,
+    chamfer_distance,
+    ray_angular_error,
+    raymap_metrics,
+    rig_discovery_accuracy,
+    rig_maa,
+)
 
 
 def raymap(directions, center=None):
@@ -120,7 +127,51 @@ def test_matches_a_hand_computed_mean():
     print(f"Mean of 90 and 45 is {error:.1f} degrees test passed!")
 
 
+def test_align_scale_recovers_a_known_factor():
+    """The model predicts at z-bar scale; metric evaluation has to undo that."""
+    gt = torch.randn(200, 3) * 12.0
+    for factor in (26.0, 1.0, 0.1):
+        recovered = align_scale(gt / factor, gt)
+        torch.testing.assert_close(recovered, torch.tensor(factor), rtol=1e-4, atol=1e-4)
+    print("align_scale recovers the normalization factor test passed!")
+
+
+def test_align_scale_survives_outliers():
+    """Reconstructed clouds carry outliers, which is why this is a median not a mean."""
+    gt = torch.randn(200, 3) * 12.0
+    pred = gt / 26.0
+    pred[0] = torch.tensor([1e6, 1e6, 1e6])  # one wild point
+
+    recovered = align_scale(pred, gt)
+    assert abs(recovered - 26.0) < 1.0, f"one outlier moved the scale to {recovered}"
+    print(f"align_scale with an outlier: {recovered:.3f} vs 26.0 test passed!")
+
+
+def test_align_scale_handles_empty_clouds():
+    """evaluate.py can hand over an empty prediction; that must not divide by zero."""
+    gt = torch.randn(10, 3)
+    assert align_scale(torch.empty(0, 3), gt) == 1.0
+    assert align_scale(gt, torch.empty(0, 3)) == 1.0
+    print("align_scale is safe on empty clouds test passed!")
+
+
+def test_existing_metrics_are_still_here():
+    """utils/metrics.py predates this branch: evaluate.py and infer_rig_discovery.py
+    import chamfer_distance, rig_discovery_accuracy and rig_maa from it."""
+    a = torch.tensor([[0.0, 0.0, 0.0], [1.0, 0.0, 0.0]])
+    assert chamfer_distance(a, a) == 0.0
+    assert rig_discovery_accuracy(a, a) == 1.0
+
+    identity = [{"R": torch.eye(3)}, {"R": torch.eye(3)}]
+    torch.testing.assert_close(rig_maa(identity, identity), torch.tensor(0.0), atol=1e-5, rtol=0)
+    print("Pre-existing metrics still present and working test passed!")
+
+
 if __name__ == "__main__":
+    test_align_scale_recovers_a_known_factor()
+    test_align_scale_survives_outliers()
+    test_align_scale_handles_empty_clouds()
+    test_existing_metrics_are_still_here()
     test_identical_rays_score_zero()
     test_known_angles_are_recovered()
     test_camera_center_is_ignored()

@@ -11,7 +11,7 @@ root_path = Path(__file__).parent.parent
 sys.path.append(str(root_path))
 
 from models.rig3r import Rig3R
-from utils.metrics import chamfer_distance, rig_discovery_accuracy, rig_maa
+from utils.metrics import align_scale, chamfer_distance, rig_discovery_accuracy, rig_maa
 from utils.rig_discovery import recover_pose_closed_form, cluster_rig_poses, reconstruct_pointcloud
 from datasets.wayve101 import Wayve101Dataset
 from torch.utils.data import DataLoader
@@ -137,17 +137,24 @@ def main():
                 # We need to reshape/pass correct format
                 pmaps_list = [pointmaps[b, n] for n in range(N)]
                 pred_pc = reconstruct_pointcloud(pmaps_list, recovered_poses)
-                
+
+                # The model predicts at z-bar normalized scale (Eq. 3 normalizes only
+                # the ground truth), so put it back into metres before any metric that
+                # is expressed in them - Chamfer, and the 0.1 m threshold below.
+                scale = align_scale(pred_pc, gt_pc[b])
+                pred_pc = pred_pc * scale
+
                 # 5. Metrics
-                
+
                 # Chamfer Distance
                 cd = chamfer_distance(pred_pc, gt_pc[b])
                 all_chamfer.append(cd.item())
-                
+
                 # Check if we have valid GT for Rig Metrics
                 if 'cam2rig' in metadata:
                     # Let's construct "pred_rig_keypoints" from our recovered poses (translations)
-                    pred_rig_keypoints = torch.stack([p['t'] for p in recovered_poses])
+                    # Same normalized scale as the pointmap, so the same factor applies.
+                    pred_rig_keypoints = torch.stack([p['t'] for p in recovered_poses]) * scale
 
                     gt_cam2rig = metadata['cam2rig'][b] # (N, ...)
                     
