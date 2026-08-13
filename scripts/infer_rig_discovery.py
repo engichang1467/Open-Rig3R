@@ -59,23 +59,12 @@ def main():
         mlp_dim=4096
     )
     
-    # We need to handle the fact that we changed the head dimension.
-    # If we load a checkpoint with 3-channel head, it will fail.
-    # For this task, we assume we might be running with a new checkpoint or we handle strict=False
-    # and re-initialize the head.
-    # However, the user prompt implies we are implementing the *capability*, 
-    # and typically we would retrain. 
-    # For the purpose of the script running, we will load with strict=False for the head if needed,
-    # or just load what matches.
-    
-    try:
-        state_dict = torch.load(model_ckpt, map_location=device)
-        model.load_state_dict(state_dict, strict=False)
-        print(f"Loaded model from {model_ckpt} (strict=False)")
-    except Exception as e:
-        print(f"Failed to load checkpoint: {e}")
-        print("Initializing random model for testing flow.")
-        
+    # Strict, and no try/except: a checkpoint that fails to load used to fall through
+    # to a randomly initialized model that still printed metrics, which is the same
+    # trap as a broken pipeline reporting 0.000000. Let it raise instead.
+    model.load_state_dict(torch.load(model_ckpt, map_location=device))
+    print(f"Loaded model from {model_ckpt}")
+
     model.to(device)
     model.eval()
     
@@ -94,9 +83,6 @@ def main():
         # Ground truth poses for metrics (if available in metadata)
         # Assuming metadata contains 'cam2rig' or similar if we want to compute MAA
         # If not, we skip MAA.
-        for k, v in metadata.items():
-            print(f"Metadata {k}: {v.shape}")
-        
         # Filter out cam2rig from metadata passed to model for Rig Discovery
         # We want the model to predict rig rays without using provided extrinsics
         model_metadata = {k: v for k, v in metadata.items() if k != 'cam2rig'}

@@ -2,26 +2,39 @@
 import torch
 from scipy.optimize import linear_sum_assignment
 
-def chamfer_distance(pc1, pc2):
+def chamfer_distance(pc1, pc2, chunk_size=1024):
     """
     Compute Chamfer Distance between two point clouds.
 
     Args:
         pc1: (N1, 3) tensor
         pc2: (N2, 3) tensor
+        chunk_size: rows of pc1 held in the distance matrix at once
     Returns:
-        scalar tensor
+        scalar tensor, or nan if either cloud is empty
     """
+    # nan, not 0.0: a zero here is indistinguishable from a perfect score, so an
+    # empty prediction used to read as a flawless reconstruction.
     if pc1.numel() == 0 or pc2.numel() == 0:
-        return torch.tensor(0.0, device=pc1.device)
+        return torch.tensor(float('nan'), device=pc1.device)
 
-    pc1 = pc1.unsqueeze(0)  # (1, N1, 3)
-    pc2 = pc2.unsqueeze(0)  # (1, N2, 3)
+    pc1 = pc1.reshape(-1, 3)
+    pc2 = pc2.reshape(-1, 3)
 
-    diff = torch.cdist(pc1, pc2)  # (1, N1, N2)
-    dist1 = diff.min(dim=2)[0].mean()
-    dist2 = diff.min(dim=1)[0].mean()
-    return dist1 + dist2
+    # A full cdist is N1 x N2 floats - 163840 predicted points against 144005
+    # ground-truth ones is 94 GB. Chunking over pc1 keeps peak memory at
+    # chunk_size x N2 while giving the exact same answer as the dense version:
+    # min over pc2 is per-chunk, min over pc1 is a running min across chunks.
+    min_over_pc2 = []
+    min_over_pc1 = torch.full((pc2.shape[0],), float('inf'),
+                              device=pc2.device, dtype=pc2.dtype)
+
+    for start in range(0, pc1.shape[0], chunk_size):
+        block = torch.cdist(pc1[start:start + chunk_size], pc2)  # (chunk, N2)
+        min_over_pc2.append(block.min(dim=1)[0])
+        min_over_pc1 = torch.minimum(min_over_pc1, block.min(dim=0)[0])
+
+    return torch.cat(min_over_pc2).mean() + min_over_pc1.mean()
 
 
 def rig_discovery_accuracy(pred_pc, gt_pc):
@@ -33,10 +46,12 @@ def rig_discovery_accuracy(pred_pc, gt_pc):
         gt_pc: (N, 3) ground truth rig keypoints
 
     Returns:
-        fraction of correctly matched points
+        fraction of correctly matched points, or nan if either input is empty
     """
+    # nan rather than 0.0 - see chamfer_distance. Zero is a legitimate score here,
+    # so it must not double as "there was nothing to score".
     if pred_pc.numel() == 0 or gt_pc.numel() == 0:
-        return torch.tensor(0.0, device=pred_pc.device)
+        return torch.tensor(float('nan'), device=pred_pc.device)
 
     # Compute distance matrix
     dist_matrix = torch.cdist(pred_pc.unsqueeze(0), gt_pc.unsqueeze(0))[0].cpu().numpy()  # (N_pred, N_gt)

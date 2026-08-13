@@ -15,7 +15,10 @@ class Wayve101Dataset(Dataset):
         Wayve101 Dataset
 
         Args:
-            root_dir (str): path to WayveScenes101 dataset root.
+            root_dir (str): path to the WayveScenes101 root - the directory that
+                *contains* the scene directories, not a single scene. Each
+                subdirectory is one sequence (non-directories such as the
+                downloaded .zip archives are ignored).
             subset (str): train/val/test split (optional, placeholder).
             n_frames (int): number of frames to sample per camera.
             image_size (tuple): output image size (H, W).
@@ -31,7 +34,8 @@ class Wayve101Dataset(Dataset):
         self.camera_dirs = ['front-forward', 'left-backward', 'left-forward', 'right-backward', 'right-forward']
 
         # 1. Load sequences
-        self.samples = [os.path.join(root_dir, seq) for seq in os.listdir(root_dir)
+        # sorted so seq_idx means the same scene across runs and machines
+        self.samples = [os.path.join(root_dir, seq) for seq in sorted(os.listdir(root_dir))
                         if os.path.isdir(os.path.join(root_dir, seq))]
 
     def __len__(self):
@@ -201,39 +205,36 @@ class Wayve101Dataset(Dataset):
         def read_bin_point3D(file_path):
             points = []
             with open(file_path, 'rb') as f:
-                header = f.read(8)
-                if len(header) < 8:
+                # The file is a uint64 count followed immediately by the records -
+                # there is no separate header to skip first.
+                count = f.read(8)
+                if len(count) < 8:
                     return torch.empty(0, 3)
-                # header
-                num_points = struct.unpack('<Q', f.read(8))[0]
+                num_points = struct.unpack('<Q', count)[0]
+
                 for _ in range(num_points):
                     data = f.read(8 + 24 + 3 + 8 + 8)  # point_id + xyz + rgb + error + track_len
                     if len(data) < 51:  # 8+24+3+8+8=51
                         break  # EOF reached unexpectedly
-                    
-                    point_id = struct.unpack('<Q', data[:8])[0]
+
                     xyz = struct.unpack('<ddd', data[8:32])
                     track_len = struct.unpack('<Q', data[43:51])[0]
 
-                    # Read & discard track data in small chunks to avoid invalid seek
-                    bytes_to_skip = track_len * 16
-                    chunk_size = 1024 * 1024  # 1 MB chunks
-                    while bytes_to_skip > 0:
-                        skip = min(bytes_to_skip, chunk_size)
-                        read_bytes = f.read(skip)
-                        if len(read_bytes) < skip:
-                            break
-                        bytes_to_skip -= len(read_bytes)
-
+                    # One track element is (uint32 image_id, uint32 point2D_idx) = 8 bytes.
+                    # Reading 16 here walks off the record boundary and the next
+                    # track_len decodes as garbage, ending the loop after one point.
+                    f.seek(track_len * 8, os.SEEK_CUR)
 
                     points.append(xyz)
+
+            if not points:
+                return torch.empty(0, 3)
             return torch.tensor(points, dtype=torch.float32)
         
         return read_bin_point3D(bin_file)
 
     def __getitem__(self, idx):
         seq_path = self.samples[idx]
-        seq_path = os.path.dirname(seq_path) + "/" # cd
         images = self._load_images(seq_path)
         masks = self._load_masks(seq_path)
         metadata = self._load_metadata(seq_path)

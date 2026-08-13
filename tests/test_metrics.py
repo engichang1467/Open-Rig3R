@@ -167,11 +167,40 @@ def test_existing_metrics_are_still_here():
     print("Pre-existing metrics still present and working test passed!")
 
 
+def test_empty_input_is_nan_not_zero():
+    """A zero is a legitimate Chamfer score and a legitimate accuracy, so returning
+    zero for "there was nothing to score" let a broken pipeline print a perfect run."""
+    a = torch.randn(8, 3)
+    empty = torch.empty(0, 3)
+
+    assert torch.isnan(chamfer_distance(empty, a))
+    assert torch.isnan(chamfer_distance(a, empty))
+    assert torch.isnan(rig_discovery_accuracy(empty, a))
+    assert torch.isnan(rig_discovery_accuracy(a, empty))
+    print("Empty inputs report nan rather than a perfect score test passed!")
+
+
+def test_chunked_chamfer_matches_the_dense_answer():
+    """Chunking exists to keep a 163840 x 144005 distance matrix off the heap; it
+    must not change the number. Chunk sizes that do and do not divide N1 evenly."""
+    pc1 = torch.randn(97, 3)
+    pc2 = torch.randn(53, 3)
+
+    reference = chamfer_distance(pc1, pc2, chunk_size=10_000)  # single block
+    for chunk_size in (1, 7, 32, 96, 97, 200):
+        torch.testing.assert_close(
+            chamfer_distance(pc1, pc2, chunk_size=chunk_size), reference, atol=1e-6, rtol=0
+        )
+    print("Chunked Chamfer equals the dense Chamfer test passed!")
+
+
 if __name__ == "__main__":
     test_align_scale_recovers_a_known_factor()
     test_align_scale_survives_outliers()
     test_align_scale_handles_empty_clouds()
     test_existing_metrics_are_still_here()
+    test_empty_input_is_nan_not_zero()
+    test_chunked_chamfer_matches_the_dense_answer()
     test_identical_rays_score_zero()
     test_known_angles_are_recovered()
     test_camera_center_is_ignored()
