@@ -15,13 +15,14 @@ class MultiTaskLoss(nn.Module):
         predicted confidence, not a validity mask.
     """
     def __init__(self, w_point=1.0, w_pose=1.0, w_rig=1.0, alpha=0.2, beta=1.0,
-                 reduction='mean'):
+                 conf_max=10.0, reduction='mean'):
         super().__init__()
         self.w_point = w_point
         self.w_pose = w_pose
         self.w_rig = w_rig
         self.alpha = alpha  # Eq. 3 confidence regularizer; paper gives no value
         self.beta = beta    # Eq. 4 camera centre weight; paper gives no value
+        self.conf_max = conf_max  # deviation from Eq. 3; see the clamp in forward
         self.reduction = reduction
 
     def forward(self, preds, gts):
@@ -56,6 +57,21 @@ class MultiTaskLoss(nn.Module):
                 # see. -alpha*log(C) is what stops it driving C to zero to escape the
                 # loss entirely.
                 conf = conf.squeeze(-1) if conf.dim() == error.dim() + 1 else conf
+
+                # Deliberate deviation from Eq. 3. The head emits 1 + softplus(x),
+                # unbounded above, so -alpha*log(C) is unbounded below: minimising over
+                # C for a fixed error gives C = alpha/error, worth
+                # alpha*(1 - log alpha + log error), which goes to -inf as error goes
+                # to zero. DUSt3R survives this because its error never gets that
+                # small. On waymo_mini it does: C climbed 1.6 -> 7.7 on held-out data
+                # over 10 epochs with no plateau, and every training batch scored
+                # negative from epoch 9. The clamp floors the term at -alpha*log(C_max)
+                # so the loss is comparable across epochs again. C_max has no value
+                # from the paper - same footing as alpha and beta.
+                conf_raw = conf
+                if self.conf_max is not None:
+                    conf = conf.clamp(max=self.conf_max)
+
                 term = conf * error - self.alpha * conf.log()
             else:
                 term = error
@@ -74,8 +90,10 @@ class MultiTaskLoss(nn.Module):
             if conf is not None:
                 # _mean suffix: gts['pointmap_conf'] above is the validity mask, this is
                 # the model's predicted C. Different things, adjacent panels.
+                # Pre-clamp, so it stays comparable with runs before the clamp landed
+                # and a mean well above conf_max shows the clamp is saturating.
                 loss_dict['pointmap_conf_mean'] = self._reduce_masked(
-                    conf, gts.get('pointmap_conf')
+                    conf_raw, gts.get('pointmap_conf')
                 )
         else:
             loss_point = 0.0

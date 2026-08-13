@@ -192,6 +192,7 @@ criterion = MultiTaskLoss(
     w_rig=loss_cfg.get("w_rig", 1.0),
     alpha=loss_cfg.get("alpha", 0.2),
     beta=loss_cfg.get("beta", 1.0),
+    conf_max=loss_cfg.get("conf_max", 10.0),
 )
 
 
@@ -417,6 +418,11 @@ for epoch in range(num_epochs):
     # -----------------------------
     # 10. Save checkpoints
     # -----------------------------
+    # Do not pick a "best" checkpoint by val_loss. The pointmap term carries an
+    # unbounded -alpha*log(C) regularizer, so val/loss is not comparable across
+    # epochs: on the 10-epoch waymo run it bottomed at epoch 4 while every
+    # loss-independent metric kept improving to epoch 10 (pose_deg 6.92 -> 2.03).
+    # pose_deg and rig_deg are degrees whatever the objective is - select on those.
     if (epoch + 1) % 5 == 0:
         ckpt_path = os.path.join("checkpoints", f"rig3r_epoch{epoch+1}.pt")
         os.makedirs("checkpoints", exist_ok=True)
@@ -424,7 +430,12 @@ for epoch in range(num_epochs):
 
         artifact = wandb.Artifact(
             f"rig3r-{run.id}", type="model",
-            metadata={"epoch": epoch + 1, "val_loss": avg_val_loss},
+            metadata={
+                "epoch": epoch + 1,
+                "val_loss": avg_val_loss,  # for the record, not for selection
+                "val_pose_deg": val_averages.get("pose_deg"),
+                "val_rig_deg": val_averages.get("rig_deg"),
+            },
         )
         artifact.add_file(ckpt_path)
         run.log_artifact(artifact, aliases=["latest", f"epoch-{epoch+1}"])

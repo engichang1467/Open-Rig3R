@@ -7,7 +7,7 @@ sequence_ids: null  # null means load all sequences, or provide list like ["segm
 # Training configuration
 batch_size: 4
 num_workers: 4
-epochs: 1 #50
+epochs: 10 #50
 n_frames: 2  # consecutive timestamps per sample; views = n_frames * num_cameras
 image_size: [128, 128]
 patch_size: 16  # fixed by the DUSt3R ViT-L/16 encoder; also sets the raymap target resolution
@@ -20,6 +20,10 @@ loss:
   w_rig: 1.0
   alpha: 0.2  # Eq. 3 confidence regularizer. Not given in the paper; DUSt3R's value.
   beta: 1.0   # Eq. 4 camera-centre weight. Not given in the paper.
+  # Ceiling on the predicted confidence C. Eq. 3 has none, and without one
+  # -alpha*log(C) is unbounded below - see models/losses.py. Floors the pointmap
+  # term at -alpha*log(conf_max) = -0.46. Set null to restore Eq. 3 exactly.
+  conf_max: 10.0
 
 # Optimizer configuration
 optimizer:
