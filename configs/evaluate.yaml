@@ -1,2 +1,9 @@
 checkpoint: "checkpoints/rig3r_epoch50.pt"
 data: "data/wayve_scenes_101"
+
+# Must match the checkpoint: image_size sets the encoder pos_embed length, so a
+# wrong value fails the strict load rather than scoring the wrong model. n_frames
+# is the exception - views are a runtime dimension, so it is free to differ from
+# training if you want to evaluate at more or fewer frames.
+n_frames: 2
+image_size: [128, 128]

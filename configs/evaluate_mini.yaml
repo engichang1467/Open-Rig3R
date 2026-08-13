@@ -1,2 +1,6 @@
 checkpoint: "checkpoints/rig3r_epoch5.pt"
 data: "data/wayve_scenes_101"
+
+# See configs/evaluate.yaml. image_size must match the checkpoint; n_frames is free.
+n_frames: 2
+image_size: [128, 128]

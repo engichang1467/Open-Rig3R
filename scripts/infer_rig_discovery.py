@@ -10,6 +10,7 @@ import sys
 root_path = Path(__file__).parent.parent
 sys.path.append(str(root_path))
 
+from models.encoder_vit import DUST3R_ENCODER
 from models.rig3r import Rig3R
 from utils.metrics import align_scale, chamfer_distance, rig_discovery_accuracy, rig_maa
 from utils.rig_discovery import recover_pose_closed_form, cluster_rig_poses, reconstruct_pointcloud
@@ -34,8 +35,11 @@ def main():
     # 1. Load Dataset
     # We use Wayve101 as in evaluate.py, or whatever is specified in config
     data_root = Path.cwd().joinpath(cfg["data"])
-    n_frames = 2 # Fixed for this task/test
-    image_size = (128, 128)
+    n_frames = cfg.get("n_frames", 2)
+    image_size = tuple(cfg.get("image_size", [128, 128]))
+    # See scripts/evaluate.py: patch_size is pinned by the DUSt3R encoder, and a
+    # wrong image_size fails the strict load rather than passing silently.
+    patch_size = DUST3R_ENCODER["patch_size"]
     
     # Note: Wayve101Dataset might need to be imported or mocked if not available in context, 
     # but based on evaluate.py it exists.
@@ -52,7 +56,7 @@ def main():
     model_ckpt = Path.cwd().joinpath(cfg["checkpoint"])
     model = Rig3R(
         img_size=image_size[0],
-        patch_size=16,
+        patch_size=patch_size,
         embed_dim=1024,
         num_decoder_layers=2,
         num_heads=8,
