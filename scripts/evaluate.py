@@ -12,8 +12,9 @@ root_path = Path(__file__).parent.parent
 sys.path.append(str(root_path))
 
 from datasets.wayve101 import Wayve101Dataset
+from models.encoder_vit import DUST3R_ENCODER
 from models.rig3r import Rig3R
-from utils.metrics import align_scale, chamfer_distance, rig_discovery_accuracy
+from utils.metrics import align_scale, chamfer_distance, rig_discovery_accuracy, rig_maa
 from utils.rig_discovery import recover_pose_closed_form, reconstruct_pointcloud
 
 # -----------------------------
@@ -34,9 +35,15 @@ args = parse_args()
 eval_cfg = load_config(args.config)
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 data_root = Path.cwd().joinpath(eval_cfg["data"])
-n_frames = 2
-image_size = (128, 128)
+n_frames = eval_cfg.get("n_frames", 2)
+image_size = tuple(eval_cfg.get("image_size", [128, 128]))
 batch_size = 1  # evaluation usually works with 1
+
+# patch_size is not read from config: the DUSt3R ViT-L/16 encoder pins it, so a
+# config key would have exactly one legal value. A wrong image_size or patch_size
+# cannot go unnoticed either way - both change parameter shapes, so the strict
+# load below raises rather than scoring the wrong model.
+patch_size = DUST3R_ENCODER["patch_size"]
 
 # -----------------------------
 # 2. Load dataset
@@ -56,7 +63,7 @@ print(f"Loaded {len(dataset)} sequences from Wayve101")
 model_ckpt = Path.cwd().joinpath(eval_cfg["checkpoint"])
 model = Rig3R(
     img_size=image_size[0],
-    patch_size=16,
+    patch_size=patch_size,
     embed_dim=1024,
     num_decoder_layers=2,
     num_heads=8,
@@ -72,6 +79,7 @@ print(f"Loaded model from {model_ckpt}")
 # -----------------------------
 all_chamfer = []
 all_rig_acc = []
+all_rig_maa = []
 
 for batch in tqdm(dataloader, desc="Evaluating Wayve101"):
     images = batch['images'].to(device)            # (B,N,3,H,W)
@@ -107,9 +115,16 @@ for batch in tqdm(dataloader, desc="Evaluating Wayve101"):
         # under a 0.1 m threshold. Handing it the dense cloud instead measures
         # nothing the metric is named for, and is cubic in the point count.
         if 'cam2rig' in metadata:
+            gt_cam2rig = metadata['cam2rig'][b]
+
             pred_keypoints = torch.stack([p['t'] for p in poses]) * scale
-            gt_keypoints = metadata['cam2rig'][b][:, :3, 3]
+            gt_keypoints = gt_cam2rig[:, :3, 3]
             all_rig_acc.append(rig_discovery_accuracy(pred_keypoints, gt_keypoints).item())
+
+            # Rotation-only, so no align_scale and no metres: unlike Chamfer, this
+            # stays comparable across changes to the scale convention.
+            gt_poses = [{'R': gt_cam2rig[n, :3, :3]} for n in range(N)]
+            all_rig_maa.append(rig_maa(poses, gt_poses).item())
 
 # -----------------------------
 # 5. Report results
@@ -123,5 +138,6 @@ print(f"\nEvaluation finished!")
 print(f"Average Chamfer Distance over {len(all_chamfer)} sequences: {avg_chamfer:.6f}")
 if all_rig_acc:
     print(f"Average Rig Discovery Accuracy: {sum(all_rig_acc)/len(all_rig_acc):.4f}")
+    print(f"Average Rig mAA (deg): {sum(all_rig_maa)/len(all_rig_maa):.4f}")
 else:
-    print("Rig Discovery Accuracy: not scored (no cam2rig ground truth in batch)")
+    print("Rig metrics: not scored (no cam2rig ground truth in batch)")

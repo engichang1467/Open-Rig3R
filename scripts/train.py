@@ -22,6 +22,7 @@ from datasets.transform import get_train_transforms, get_val_transforms
 
 # --- Import model ---
 from models.rig3r import Rig3R
+from models.encoder_vit import DUST3R_ENCODER
 from models.losses import MultiTaskLoss
 from utils.amp import needs_grad_scaler, select_amp_dtype
 from utils.metrics import raymap_metrics
@@ -61,7 +62,18 @@ dataset_type = train_cfg.get("dataset_type", "co3d")
 # 2. Prepare datasets
 # -----------------------------
 img_size = tuple(train_cfg.get("image_size", [128, 128]))
-patch_size = train_cfg.get("patch_size", 8)
+
+# patch_size is not a free parameter while the DUSt3R encoder is in use: it pins
+# ViT-L/16 and models/encoder_vit.py loads strict. Reading it from config only
+# created a way to get it wrong - configs/train_mini.yaml omitted the key and took
+# the old default of 8, which cannot load the encoder at all. It also sets the
+# raymap target resolution.
+patch_size = DUST3R_ENCODER["patch_size"]
+if train_cfg.get("patch_size", patch_size) != patch_size:
+    raise ValueError(
+        f"config sets patch_size={train_cfg['patch_size']}, but the DUSt3R encoder "
+        f"is fixed at {patch_size}. Drop the key rather than have it silently ignored."
+    )
 
 if dataset_type == "co3d":
     co3d_path = Path.cwd().joinpath("data/co3d")
