@@ -169,8 +169,14 @@ amp_dtype = select_amp_dtype(device, train_cfg.get("amp_dtype"))
 scaler = torch.amp.GradScaler(device.type, enabled=needs_grad_scaler(amp_dtype))
 print(f"AMP: {amp_dtype} on {device.type}, grad scaler {'on' if scaler.is_enabled() else 'off'}")
 
+# T_max is the cosine period in epochs, so it only makes sense as the run length.
+# Set independently it silently decays a fraction of the schedule - a 10-epoch run
+# against T_max 50 moved lr by 9%, i.e. a constant learning rate. Default it to
+# epochs rather than validating the two agree: they cannot disagree if there is
+# only one source.
 scheduler = CosineAnnealingLR(optimizer,
-                              T_max=train_cfg["scheduler"]["T_max"],
+                              T_max=train_cfg["scheduler"].get("T_max")
+                                    or train_cfg.get("epochs", 50),
                               eta_min=float(train_cfg["scheduler"]["eta_min"]))
 
 # -----------------------------

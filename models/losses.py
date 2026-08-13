@@ -64,6 +64,19 @@ class MultiTaskLoss(nn.Module):
             # sums over, not a weight. Patches with no return supervise nothing.
             loss_point = self._reduce_masked(term, gts.get('pointmap_conf'))
             loss_dict['pointmap'] = loss_point
+
+            # 'pointmap' bundles conf*error and -alpha*log(conf) into one number, and
+            # the two move independently: conf is unbounded above, so the regularizer
+            # can drag the total down while reconstruction gets worse. Report the raw
+            # error and the mean confidence separately or the logs cannot tell those
+            # apart - and they call for opposite responses.
+            loss_dict['pointmap_err'] = self._reduce_masked(error, gts.get('pointmap_conf'))
+            if conf is not None:
+                # _mean suffix: gts['pointmap_conf'] above is the validity mask, this is
+                # the model's predicted C. Different things, adjacent panels.
+                loss_dict['pointmap_conf_mean'] = self._reduce_masked(
+                    conf, gts.get('pointmap_conf')
+                )
         else:
             loss_point = 0.0
 

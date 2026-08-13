@@ -206,8 +206,36 @@ def test_invalid_patches_supervise_nothing():
     print("Masked-out patches contribute nothing test passed!")
 
 
+def test_raw_error_is_reported_apart_from_the_confidence():
+    """The bundled term can fall while reconstruction is unchanged; err must not."""
+    torch.manual_seed(0)
+    point_pred = torch.randn(1, 1, 8, 3)
+    # A near-zero error is what lets -alpha*log(C) outrun C*error; that is the regime
+    # waymo_mini reaches by epoch 7.
+    gts = {'pointmap': point_pred + 1e-4, 'pointmap_conf': torch.ones(1, 1, 8)}
+    criterion = MultiTaskLoss(alpha=0.2)
+
+    reported = {}
+    for value in (2.0, 1000.0):
+        preds = {'pointmap': point_pred, 'pointmap_conf': torch.full((1, 1, 8, 1), value)}
+        reported[value] = criterion(preds, gts)[1]
+
+    # Inflating C alone drives the bundled term down, and below zero. That is the whole
+    # bug: it must not look like reconstruction improved.
+    assert reported[1000.0]['pointmap'] < reported[2.0]['pointmap'] < 0
+    torch.testing.assert_close(
+        reported[1000.0]['pointmap_err'], reported[2.0]['pointmap_err']
+    )
+    assert reported[1000.0]['pointmap_err'] > 0
+    torch.testing.assert_close(
+        reported[1000.0]['pointmap_conf_mean'], torch.tensor(1000.0)
+    )
+    print("Raw error and confidence are reported separately test passed!")
+
+
 if __name__ == "__main__":
     test_loss_smoke()
+    test_raw_error_is_reported_apart_from_the_confidence()
     test_half_precision_predictions_backward()
     test_direction_term_is_the_ray_norm_not_cosine()
     test_matching_directions_score_zero()
