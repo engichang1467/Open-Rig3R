@@ -15,13 +15,14 @@ class MultiTaskLoss(nn.Module):
         predicted confidence, not a validity mask.
     """
     def __init__(self, w_point=1.0, w_pose=1.0, w_rig=1.0, alpha=0.2, beta=1.0,
-                 reduction='mean'):
+                 conf_max=10.0, reduction='mean'):
         super().__init__()
         self.w_point = w_point
         self.w_pose = w_pose
         self.w_rig = w_rig
         self.alpha = alpha  # Eq. 3 confidence regularizer; paper gives no value
         self.beta = beta    # Eq. 4 camera centre weight; paper gives no value
+        self.conf_max = conf_max  # deviation from Eq. 3; see the clamp in forward
         self.reduction = reduction
 
     def forward(self, preds, gts):
@@ -35,10 +36,7 @@ class MultiTaskLoss(nn.Module):
 
         loss_dict = {}
 
-        # Predictions arrive in whatever dtype autocast produced, targets are always
-        # fp32. F.mse_loss rejects a half/float pair outright ("Found dtype Float but
-        # expected Half"), and loss reductions are safer accumulated at full precision
-        # anyway, so score everything in fp32. Casting back is differentiable.
+        # Autocast preds can be half while targets are fp32; F.mse_loss rejects the mixed pair and reductions are safer at full precision, so cast to fp32 (differentiable).
         preds = {k: v.float() if torch.is_tensor(v) else v for k, v in preds.items()}
         gts = {k: v.float() if torch.is_tensor(v) else v for k, v in gts.items()}
 
@@ -52,18 +50,29 @@ class MultiTaskLoss(nn.Module):
 
             conf = preds.get('pointmap_conf')
             if conf is not None:
-                # C is the model's own confidence, so it can downweight what it cannot
-                # see. -alpha*log(C) is what stops it driving C to zero to escape the
-                # loss entirely.
+                # C lets the model downweight what it cannot see; -alpha*log(C) stops it zeroing C to escape the loss.
                 conf = conf.squeeze(-1) if conf.dim() == error.dim() + 1 else conf
+
+                # Deviation from Eq. 3: unbounded C makes -alpha*log(C) unbounded below (C hit 7.7 and batches went negative by epoch 9), so clamp floors it at -alpha*log(C_max); this bounds long runs but does not make val/loss selectable - select on *_deg.
+                conf_raw = conf
+                if self.conf_max is not None:
+                    conf = conf.clamp(max=self.conf_max)
+
                 term = conf * error - self.alpha * conf.log()
             else:
                 term = error
 
-            # gts['pointmap_conf'] is the lidar validity fraction: the set D_v Eq. 3
-            # sums over, not a weight. Patches with no return supervise nothing.
+            # gts['pointmap_conf'] is the lidar validity fraction defining D_v in Eq. 3, a mask not a weight: patches with no return supervise nothing.
             loss_point = self._reduce_masked(term, gts.get('pointmap_conf'))
             loss_dict['pointmap'] = loss_point
+
+            # 'pointmap' mixes conf*error with -alpha*log(conf), so log raw error and mean conf separately.
+            loss_dict['pointmap_err'] = self._reduce_masked(error, gts.get('pointmap_conf'))
+            if conf is not None:
+                # _mean = model's predicted C (not the validity mask above), pre-clamp so it stays comparable across runs and reveals clamp saturation.
+                loss_dict['pointmap_conf_mean'] = self._reduce_masked(
+                    conf_raw, gts.get('pointmap_conf')
+                )
         else:
             loss_point = 0.0
 

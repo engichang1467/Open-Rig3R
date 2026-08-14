@@ -43,9 +43,7 @@ class ViTEncoder(nn.Module):
             pos_embed="learn",  # overwritten below with a fixed sine-cosine table
         )
 
-        # Rig3R sec 3.3 encodes patches with 2D sine-cosine, not the checkpoint's
-        # RoPE100, so this table is generated rather than loaded and stays frozen
-        # even when the rest of the encoder is fine-tuned.
+        # Rig3R sec 3.3 uses 2D sine-cosine, not the checkpoint's RoPE100, so this table is generated rather than loaded and stays frozen through encoder fine-tuning.
         self.vit.pos_embed = nn.Parameter(
             build_sincos2d_pos_embed(self.vit.patch_embed.grid_size, embed_dim).unsqueeze(0),
             requires_grad=False,
@@ -54,8 +52,7 @@ class ViTEncoder(nn.Module):
         if checkpoint_path is not None:
             self._load_dust3r_weights(checkpoint_path)
 
-        # 300M frozen params cost ~1.2 GiB of activations for 128 views; trainable
-        # they cost ~5 GiB of optimizer state on top and will not fit a 12 GB card.
+        # Frozen, these 300M params cost ~1.2 GiB of activations at 128 views; trainable they add ~5 GiB of optimizer state and blow past a 12 GB card.
         if freeze:
             self.vit.requires_grad_(False)
 

@@ -47,9 +47,7 @@ def load_config(config_path):
 args = parse_args()
 train_cfg = load_config(args.config)
 
-# Without this every run draws a different init and a different shuffle, so two runs
-# of the same config cannot be compared - which is what made the 37a A/B unreadable.
-# DataLoader workers inherit deterministic per-worker seeds from the torch seed.
+# Without this every run draws a different init and shuffle, so two runs of the same config are not comparable (this is what made the 37a A/B unreadable), and DataLoader workers inherit deterministic per-worker seeds from the torch seed.
 seed = train_cfg.get("seed", 0)
 random.seed(seed)
 torch.manual_seed(seed)
@@ -63,11 +61,7 @@ dataset_type = train_cfg.get("dataset_type", "co3d")
 # -----------------------------
 img_size = tuple(train_cfg.get("image_size", [128, 128]))
 
-# patch_size is not a free parameter while the DUSt3R encoder is in use: it pins
-# ViT-L/16 and models/encoder_vit.py loads strict. Reading it from config only
-# created a way to get it wrong - configs/train_mini.yaml omitted the key and took
-# the old default of 8, which cannot load the encoder at all. It also sets the
-# raymap target resolution.
+# patch_size is pinned to 16 by the DUSt3R ViT-L/16 encoder (which loads strict) and also sets the raymap target resolution, so it is hardcoded rather than read from config, where a missing key silently fell back to 8 and broke loading.
 patch_size = DUST3R_ENCODER["patch_size"]
 if train_cfg.get("patch_size", patch_size) != patch_size:
     raise ValueError(
@@ -162,15 +156,15 @@ optimizer = optim.AdamW(model.parameters(),
                         lr=float(train_cfg["optimizer"]["lr"]),
                         weight_decay=train_cfg["optimizer"].get("weight_decay", 0.01))
 
-# autocast defaults to fp16 on CUDA, which underflows small gradients to zero unless
-# a scaler compensates. bf16 has fp32's exponent range and needs no scaler; the scaler
-# below is a no-op except on the pre-Ampere cards that fall back to fp16.
+# autocast defaults to fp16 on CUDA, whose small gradients underflow without a scaler, so prefer bf16 for fp32's exponent range and leave the scaler below a no-op except on pre-Ampere cards that fall back to fp16.
 amp_dtype = select_amp_dtype(device, train_cfg.get("amp_dtype"))
 scaler = torch.amp.GradScaler(device.type, enabled=needs_grad_scaler(amp_dtype))
 print(f"AMP: {amp_dtype} on {device.type}, grad scaler {'on' if scaler.is_enabled() else 'off'}")
 
+# T_max is the cosine period in epochs and only makes sense as the run length, since setting it apart silently decays a fraction of the schedule (a 10-epoch run against T_max 50 moved lr by 9%, i.e. constant), so default it to epochs rather than validating agreement between two sources.
 scheduler = CosineAnnealingLR(optimizer,
-                              T_max=train_cfg["scheduler"]["T_max"],
+                              T_max=train_cfg["scheduler"].get("T_max")
+                                    or train_cfg.get("epochs", 50),
                               eta_min=float(train_cfg["scheduler"]["eta_min"]))
 
 # -----------------------------
@@ -186,6 +180,7 @@ criterion = MultiTaskLoss(
     w_rig=loss_cfg.get("w_rig", 1.0),
     alpha=loss_cfg.get("alpha", 0.2),
     beta=loss_cfg.get("beta", 1.0),
+    conf_max=loss_cfg.get("conf_max", 10.0),
 )
 
 
@@ -418,7 +413,12 @@ for epoch in range(num_epochs):
 
         artifact = wandb.Artifact(
             f"rig3r-{run.id}", type="model",
-            metadata={"epoch": epoch + 1, "val_loss": avg_val_loss},
+            metadata={
+                "epoch": epoch + 1,
+                "val_loss": avg_val_loss,  # for the record, not for selection
+                "val_pose_deg": val_averages.get("pose_deg"),
+                "val_rig_deg": val_averages.get("rig_deg"),
+            },
         )
         artifact.add_file(ckpt_path)
         run.log_artifact(artifact, aliases=["latest", f"epoch-{epoch+1}"])

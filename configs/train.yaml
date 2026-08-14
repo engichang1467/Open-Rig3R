@@ -20,15 +20,19 @@ loss:
   w_rig: 1.0
   alpha: 0.2  # Eq. 3 confidence regularizer. Not given in the paper; DUSt3R's value.
   beta: 1.0   # Eq. 4 camera-centre weight. Not given in the paper.
+  # Ceiling on the predicted confidence C. Eq. 3 has none, and without one
+  # -alpha*log(C) is unbounded below - see models/losses.py. Floors the pointmap
+  # term at -alpha*log(conf_max) = -0.46. Set null to restore Eq. 3 exactly.
+  conf_max: 10.0
 
 # Optimizer configuration
 optimizer:
   lr: 0.0001
   weight_decay: 0.01
 
-# Scheduler configuration
+# Scheduler configuration. T_max defaults to `epochs` - set it only to deliberately
+# traverse a fraction of the cosine period.
 scheduler:
-  T_max: 50
   eta_min: 0.000001
 
 # Device

@@ -96,9 +96,7 @@ class RigAwareTransformerDecoder(nn.Module):
         )
         self.meta_dim = embed_dim // len(METADATA_FIELDS)
 
-        # sec 3.3: the rig raymap patch r_i in R^6 is linearly projected. The discrete
-        # IDs and the timestamp use parameter-free sine-cosine codes, so this is the
-        # only learned part of the metadata embedding.
+        # sec 3.3: the rig raymap patch r_i in R^6 is linearly projected, and since the IDs and timestamp use parameter-free sine-cosine codes, this is the only learned part of the metadata embedding.
         self.rig_proj = nn.Linear(6, self.meta_dim)
 
         # transformer layers
@@ -169,10 +167,7 @@ class RigAwareTransformerDecoder(nn.Module):
         embedding = torch.cat(per_view, dim=-1).unsqueeze(2)  # (B, V, 1, 3 * meta_dim)
         embedding = embedding.expand(B, frames, patches_per_frame, -1)
 
-        # The rig raymap patch is per-patch rather than per-view, so it is projected
-        # and masked on its own. It is also the rig raymap head's target, which is why
-        # dropout here is load-bearing rather than mere regularization: without it the
-        # head is handed its own answer on every step.
+        # The rig raymap patch is per-patch, so it gets its own projection and mask, and dropout here is load-bearing since it is also the rig raymap head's target and would otherwise hand the head its own answer.
         rig_raymap = metadata.get("rig_raymap")
         if rig_raymap is None:
             rig_slice = torch.zeros(B, frames, patches_per_frame, self.meta_dim, device=device)
