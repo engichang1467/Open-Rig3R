@@ -406,29 +406,22 @@ for epoch in range(num_epochs):
     # -----------------------------
     # 10. Save checkpoints
     # -----------------------------
-    # Do not pick a "best" checkpoint by val_loss. Held-out pointmap error (~0.22)
-    # exceeds alpha (0.2), so the confidence term rises with every unit of C the
-    # head emits - val/loss degrades as a direct consequence of the model learning
-    # to be confident, and conf_max does not change the sign of that. On both
-    # 10-epoch waymo runs val/loss bottomed at epoch 3-4 while every
-    # loss-independent metric kept improving to epoch 10 (pose_deg 6.2 -> 2.01).
-    # pose_deg and rig_deg are degrees whatever the objective is - select on those.
-    # if (epoch + 1) % 5 == 0:
-    #     ckpt_path = os.path.join("checkpoints", f"rig3r_epoch{epoch+1}.pt")
-    #     os.makedirs("checkpoints", exist_ok=True)
-    #     torch.save(model.state_dict(), ckpt_path)
+    if (epoch + 1) % 5 == 0:
+        ckpt_path = os.path.join("checkpoints", f"rig3r_epoch{epoch+1}.pt")
+        os.makedirs("checkpoints", exist_ok=True)
+        torch.save(model.state_dict(), ckpt_path)
 
-    #     artifact = wandb.Artifact(
-    #         f"rig3r-{run.id}", type="model",
-    #         metadata={
-    #             "epoch": epoch + 1,
-    #             "val_loss": avg_val_loss,  # for the record, not for selection
-    #             "val_pose_deg": val_averages.get("pose_deg"),
-    #             "val_rig_deg": val_averages.get("rig_deg"),
-    #         },
-    #     )
-    #     artifact.add_file(ckpt_path)
-    #     run.log_artifact(artifact, aliases=["latest", f"epoch-{epoch+1}"])
+        artifact = wandb.Artifact(
+            f"rig3r-{run.id}", type="model",
+            metadata={
+                "epoch": epoch + 1,
+                "val_loss": avg_val_loss,  # for the record, not for selection
+                "val_pose_deg": val_averages.get("pose_deg"),
+                "val_rig_deg": val_averages.get("rig_deg"),
+            },
+        )
+        artifact.add_file(ckpt_path)
+        run.log_artifact(artifact, aliases=["latest", f"epoch-{epoch+1}"])
 
 run.finish()
 print("Training finished!")
