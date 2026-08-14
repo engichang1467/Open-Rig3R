@@ -321,7 +321,7 @@ run = wandb.init(
     project=train_cfg.get("wandb_project", "open-rig3r"),
     entity=train_cfg.get("wandb_entity"),
     name=train_cfg.get("wandb_run_name"),
-    mode=train_cfg.get("wandb_mode", "offline"),  # "offline" / "disabled" for no network
+    mode=train_cfg.get("wandb_mode", "online"),  # "offline" / "disabled" for no network
     config={**train_cfg, "config_file": args.config, "device": str(device),
             "amp_dtype": str(amp_dtype), "grad_scaler": scaler.is_enabled()},
     dir="runs",
