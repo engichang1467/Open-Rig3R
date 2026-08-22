@@ -93,7 +93,7 @@ Install them with:
 pip install -r requirements.txt
 ```
 
-> **WSL / Headless note:** The interactive Open3D viewer requires a display. On WSL without an X server, skip the viewer with `--no-show` and use `--export` to save the result to a file instead.
+> **WSL / Headless note:** The interactive Open3D viewer requires a display. On WSL without an X server, skip the viewer with `--no-show` and use `--html` for an interactive browser view, or `--export` to save the point cloud to a file.
 
 ---
 
@@ -107,6 +107,13 @@ python scripts/visualize.py --config configs/evaluate.yaml --device cpu
 python scripts/visualize.py \
     --config configs/evaluate.yaml \
     --export outputs/scene000.ply \
+    --no-show \
+    --device cpu
+
+# Interactive HTML — no display needed, opens in any browser
+python scripts/visualize.py \
+    --config configs/evaluate.yaml \
+    --html runs/viz/scene000.html \
     --no-show \
     --device cpu
 ```
@@ -136,6 +143,7 @@ python scripts/visualize.py --config <path> [options]
 | `--seq-idx` | `0` | Index of the dataset sequence to run inference on |
 | `--n-frames` | `2` | Number of views to load per sequence |
 | `--image-size H W` | `128 128` | Inference resolution — must match the training resolution |
+| `--seed` | `0` | Random seed — see [Reproducibility](#reproducibility) |
 
 ### Confidence filtering
 
@@ -171,6 +179,8 @@ python scripts/visualize.py --config <path> [options]
 | Flag | Default | Description |
 | :--- | :--- | :--- |
 | `--export` | — | Save point cloud to this path (`.ply` or `.pcd`) |
+| `--html` | — | Write an interactive HTML viewer to this path (no display required) |
+| `--point-sample` | `1.0` | Fraction of points kept in the HTML export (`<1` shrinks the file) |
 | `--no-show` | — | Skip the interactive viewer |
 | `--batch-idx` | `0` | Which element within the batch to visualize |
 
@@ -216,6 +226,34 @@ python scripts/visualize.py \
 ```
 
 The exported PLY file can be opened in MeshLab, CloudCompare, or any other tool that reads point clouds.
+
+### View in a browser — no X server needed
+
+```bash
+python scripts/visualize.py \
+    --config configs/evaluate.yaml \
+    --n-frames 10 \
+    --color-mode rig-cluster --n-clusters 3 \
+    --html runs/viz/scene000.html \
+    --point-sample 0.25 \
+    --no-show \
+    --device cpu
+```
+
+Serve the output directory and open the page in a browser:
+
+```bash
+cd runs/viz
+python3 -m http.server 8000 --bind 127.0.0.1
+```
+
+Then visit `http://127.0.0.1:8000/scene000.html`. On WSL the same URL works in the Windows browser.
+
+The page is a self-contained plotly scene with orbit, pan, and zoom. It carries the same geometry as the interactive viewer — point cloud, camera frustums, and rays when `--rays` is passed. This is the recommended path on WSL, over SSH, or on any headless server, since it needs no display and no VcXsrv setup.
+
+`--point-sample` thins the cloud before writing. A full 10-view 128×128 scene at `--conf-percentile 80` is ~33k points and produces a several-MB file; `--point-sample 0.25` cuts that to a quarter. Frustums and rays are never thinned.
+
+`--html` and `--export` can be used in the same run.
 
 ### Overlay predicted rays for debugging
 
@@ -351,6 +389,39 @@ For export, `o3d.io.write_point_cloud` is used. The format is determined by the 
 
 - `.ply` — ASCII PLY (human-readable, larger file)
 - `.pcd` — binary PCD (compact, fast to load)
+
+When `--html` is passed, the same geometry list (minus the coordinate frame) is converted by Open3D's own `get_plotly_fig` into a plotly figure, and written with `fig.write_html(..., include_plotlyjs="cdn")`. The `cdn` setting keeps the file small but requires internet access when the page is opened; switch to `include_plotlyjs=True` in `scripts/visualize.py` for a fully offline ~4 MB file.
+
+---
+
+## Reproducibility
+
+Three separate RNGs feed a single picture, so without a fixed seed two runs of the same command produce different output:
+
+| Source | What it decides |
+| :--- | :--- |
+| `random` | Which frames `Wayve101Dataset` samples from the sequence (`random.sample`) |
+| `numpy` | `kmeans2(minit='points')` centroid init for `rig-cluster` coloring, and the `--point-sample` thinning in the HTML export |
+| `torch` | Weight init, which only matters when the checkpoint fails to load |
+
+`scripts/visualize.py` seeds all three from `--seed` (default `0`) before the dataset is constructed, matching the `seed` handling in `scripts/train.py`. The seed is echoed in the run log:
+
+```
+[visualize] Seed: 0
+```
+
+Same seed and same flags give the same frames, the same cluster assignment, and the same subsampled points:
+
+```bash
+python scripts/visualize.py --config configs/evaluate.yaml \
+    --color-mode rig-cluster --n-clusters 2 \
+    --seed 0 --no-show --device cpu
+# [visualize] Rig clusters: cluster 0: 6 views  cluster 1: 14 views   ← stable across runs
+```
+
+Change `--seed` to draw a different set of frames or a different kmeans init — useful for checking that a cluster split is a real rig structure rather than an artifact of one centroid initialization.
+
+> **Note:** the seed does not make CUDA kernels bit-deterministic. Point coordinates can differ in the last decimal places between a `--device cuda` and a `--device cpu` run of the same seed. Frame selection, cluster labels, and point subsampling are stable regardless of device.
 
 ---
 

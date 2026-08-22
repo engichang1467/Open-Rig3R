@@ -18,7 +18,9 @@ Example (headless export):
 
 import open3d  # noqa: F401 — must be imported before torch to avoid libstdc++ conflict
 import argparse
+import random
 import sys
+import numpy as np
 import yaml
 import torch
 from pathlib import Path
@@ -68,6 +70,11 @@ def parse_args() -> argparse.Namespace:
         "--image-size", type=int, nargs=2, default=[128, 128],
         metavar=("H", "W"),
         help="Image resolution for inference (must match training resolution).",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=0,
+        help="Random seed. Fixes frame sampling, kmeans init, and HTML point "
+             "subsampling so the same flags give the same picture.",
     )
     parser.add_argument(
         "--device", type=str, default=None,
@@ -129,6 +136,15 @@ def parse_args() -> argparse.Namespace:
         help="Export point cloud to this path (.ply or .pcd).",
     )
     parser.add_argument(
+        "--html", type=str, default=None,
+        help="Write a self-contained interactive HTML viewer to this path "
+             "(plotly-backed, works headless / over SSH).",
+    )
+    parser.add_argument(
+        "--point-sample", type=float, default=1.0,
+        help="Fraction of points kept in the HTML export (<1 shrinks the file).",
+    )
+    parser.add_argument(
         "--no-show", dest="show", action="store_false",
         help="Skip the interactive Open3D viewer (useful on headless / WSL).",
     )
@@ -159,6 +175,15 @@ def load_config(path: str) -> dict:
 def main():
     args = parse_args()
     cfg = load_config(args.config)
+
+    # Three separate RNGs feed one picture: `random` picks which frames the
+    # dataset loads, numpy drives the kmeans2 centroid init and the --point-sample
+    # thinning, torch decides the init if the checkpoint fails to load.
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    torch.cuda.manual_seed_all(args.seed)
+    print(f"[visualize] Seed: {args.seed}")
 
     if args.device:
         device = torch.device(args.device)
@@ -249,6 +274,21 @@ def main():
         export_path=args.export,
         show=args.show,
     )
+
+    # ── HTML export ──────────────────────────
+    if args.html:
+        from open3d.visualization.draw_plotly import get_plotly_fig
+
+        geoms = [result["pcd"]] + result["frustums"]
+        if result["rays"] is not None:
+            geoms.append(result["rays"])
+        fig = get_plotly_fig(
+            geoms, width=1280, height=720,
+            point_sample_factor=args.point_sample,
+        )
+        Path(args.html).parent.mkdir(parents=True, exist_ok=True)
+        fig.write_html(args.html, include_plotlyjs="cdn")
+        print(f"[visualize] HTML written: {args.html}")
 
     # ── Summary ──────────────────────────────
     labels = result["labels"]
